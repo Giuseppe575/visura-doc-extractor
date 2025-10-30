@@ -124,7 +124,8 @@ class DocumentExtractor:
             'Forma_Giuridica': r"(?:Forma\s+giuridica|Natura\s+giuridica)[:\s]*\n?\s*([^\n]+)",
             'Sede_Legale': r"(?:Sede\s+legale|Indirizzo)[:\s]*\n?\s*([^\n]+?)(?:\s*\d{5}|\n)",
             'CAP': r"(?:^|\s|-)(\d{5})(?:\s+[A-Z]|\s*-|\s*\()",
-            'Comune': r"(?:\d{5}\s*[-,]?\s*|Comune[:\s]+)([A-Z][A-Za-z][A-Za-z\s\'\.]+?)(?:\s*[\(\-]|,?\s*(?:Provincia|Prov\.?)\s*[:\(]|\s+[A-Z]{2}\s*[\)\-])",
+            # Pattern migliorato per Comune: cattura solo 1-3 parole dopo il CAP, prima della provincia
+            'Comune': r"\d{5}\s*[-,]?\s*([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,2})(?:\s*\(|\s*[-,]?\s*\(?[A-Z]{2}\)?)",
             'Provincia': r"(?:Provincia|Prov\.?|Sigla)[:\s]*\(?\s*([A-Z]{2})\s*\)?|(?:^|\s)\(([A-Z]{2})\)",
             'Data_Costituzione': r"(?:Data\s+costituzione|Costituita\s+il|Data\s+iscrizione)[:\s]*\n?\s*(\d{1,2}[/\.\-]\d{1,2}[/\.\-]\d{4})",
             'Capitale_Sociale': r"(?:Capitale\s+sociale|Capitale)[:\s]*\n?\s*(?:€|EUR|Euro)?\s*([\d\.,]+)",
@@ -138,10 +139,23 @@ class DocumentExtractor:
                 cleaned_value = value.strip()
                 # Rimuovi spazi multipli
                 cleaned_value = re.sub(r'\s+', ' ', cleaned_value)
-                # Pulizia specifica per il Comune (rimuovi virgole e trattini finali)
+
+                # Pulizia specifica per il Comune
                 if key == 'Comune':
                     cleaned_value = re.sub(r'[,\-\s]+$', '', cleaned_value)
+                    # Salta valori non validi per un comune
+                    invalid_words = ['NUMERO', 'REPERTORIO', 'ECONOMICO', 'REA', 'AMMINISTRATIVO', 'ATTIVITA']
+                    if any(word in cleaned_value.upper() for word in invalid_words):
+                        continue  # Salta questo valore, non è valido
+
                 data[key] = cleaned_value
+
+        # Fallback per Comune: cerca pattern alternativi se non trovato
+        if 'Comune' not in data or not data.get('Comune'):
+            # Prova pattern alternativo: "Comune:" seguito dal nome
+            alt_match = re.search(r"Comune[:\s]+([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,2})(?:\s*\n|\s*$)", text, re.IGNORECASE | re.MULTILINE)
+            if alt_match:
+                data['Comune'] = alt_match.group(1).strip()
 
         return data
     
