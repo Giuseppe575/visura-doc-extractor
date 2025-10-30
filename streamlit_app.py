@@ -104,7 +104,13 @@ class DocumentExtractor:
     def extract_pattern(self, text, pattern):
         """Estrae un pattern dal testo usando regex"""
         match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
-        return match.group(1).strip() if match else None
+        if not match:
+            return None
+        # Prova tutti i gruppi e ritorna il primo non-None
+        for i in range(1, len(match.groups()) + 1):
+            if match.group(i):
+                return match.group(i).strip()
+        return None
     
     def parse_visura_camerale(self, text):
         """Analizza il testo della visura camerale ed estrae i dati"""
@@ -136,12 +142,6 @@ class DocumentExtractor:
                 if key == 'Comune':
                     cleaned_value = re.sub(r'[,\-\s]+$', '', cleaned_value)
                 data[key] = cleaned_value
-
-        # Fallback per Provincia: cerca nel gruppo 2 se gruppo 1 non ha funzionato
-        if 'Provincia' not in data or not data['Provincia']:
-            match = re.search(r"(?:^|\s)\(([A-Z]{2})\)", text, re.IGNORECASE | re.MULTILINE)
-            if match:
-                data['Provincia'] = match.group(1)
 
         return data
     
