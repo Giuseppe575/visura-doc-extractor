@@ -87,7 +87,14 @@ class DocumentExtractor:
     def extract_text_from_image(self, image):
         """Estrae il testo da un'immagine usando OCR"""
         try:
-            text = pytesseract.image_to_string(image, lang='ita')
+            # Preprocessing dell'immagine per migliorare l'OCR
+            # Converti in scala di grigi se necessario
+            if image.mode != 'L':
+                image = image.convert('L')
+
+            # Configurazione OCR per migliore estrazione
+            custom_config = r'--oem 3 --psm 6'
+            text = pytesseract.image_to_string(image, lang='ita', config=custom_config)
             return text
         except Exception as e:
             st.error(f"Errore nell'OCR: {str(e)}")
@@ -128,24 +135,39 @@ class DocumentExtractor:
     def parse_documento_identita(self, text):
         """Analizza il testo del documento d'identità ed estrae i dati"""
         data = {}
-        
+
+        # Pattern migliorati per carte d'identità italiane
         patterns = {
-            'Nome': r"(?:Nome|NOME)[:\s]*([A-Z][a-z]+)",
-            'Cognome': r"(?:Cognome|COGNOME)[:\s]*([A-Z]+)",
-            'Data_Nascita': r"(?:Nat[oa]|Data di nascita)[:\s]*(?:il\s*)?(\d{2}[/\.-]\d{2}[/\.-]\d{4})",
-            'Luogo_Nascita': r"(?:Nat[oa]\s*a|Luogo di nascita)[:\s]*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)",
+            'Cognome': r"(?:Cognome|COGNOME|Surname)[:\s]*\n?\s*([A-Z\s]+?)(?:\n|Nome|NOME|$)",
+            'Nome': r"(?:Nome|NOME|Name)[:\s]*\n?\s*([A-Z][A-Za-z\s]+?)(?:\n|Luogo|Nat|Data|$)",
+            'Luogo_Nascita': r"(?:Luogo\s*di\s*nascita|Nat[oa]\s*a|Place\s*of\s*birth)[:\s]*\n?\s*([A-Z][A-Za-z\s\']+?)(?:\s*\(|,|\n|il|$)",
+            'Provincia_Nascita': r"(?:Luogo\s*di\s*nascita|Nat[oa]\s*a)[:\s]*[^(\n]*\(([A-Z]{2})\)",
+            'Data_Nascita': r"(?:Data\s*di\s*nascita|Nat[oa]\s*il|Date\s*of\s*birth)[:\s]*\n?\s*(\d{1,2}[/\.\-\s]\d{1,2}[/\.\-\s]\d{4})",
+            'Sesso': r"(?:Sesso|Sex)[:\s]*\n?\s*([MF])",
+            'Statura': r"(?:Statura|Height)[:\s]*\n?\s*(\d+[\.,]?\d*)\s*(?:cm|m)?",
+            'Cittadinanza': r"(?:Cittadinanza|Citizenship)[:\s]*\n?\s*([A-Z][A-Za-z]+)",
+            'Residenza': r"(?:Residenza|Residence|Indirizzo)[:\s]*\n?\s*([A-Z][A-Za-z0-9\s,\.\']+?)(?:\n\n|\n[A-Z]{2}\d{7}|Rilascia)",
+            'Comune_Residenza': r"(?:Comune|Municipality)[:\s]*\n?\s*([A-Z][A-Za-z\s]+?)(?:\s*\(|,|\n|$)",
             'CF_Persona': r"([A-Z]{6}\d{2}[A-Z]\d{2}[A-Z]\d{3}[A-Z])",
-            'Numero_Documento': r"(?:N\.|Numero|NUMERO)[:\s]*([A-Z]{2}\d{7}|[A-Z0-9]{6,9})",
-            'Data_Rilascio': r"(?:Rilasciato|Emesso|Data di rilascio)[:\s]*(?:il\s*)?(\d{2}[/\.-]\d{2}[/\.-]\d{4})",
-            'Data_Scadenza': r"(?:Scadenza|Valida fino al)[:\s]*(\d{2}[/\.-]\d{2}[/\.-]\d{4})",
-            'Tipo_Documento': r"(CARTA D'IDENTITA|PATENTE|PASSAPORTO)"
+            'Numero_Documento': r"(?:Carta\s*d[\'i]?\s*identit[aà]\s*n|Numero|N\.|Document\s*no)[:\.]?\s*\n?\s*([A-Z]{2}\s*\d{7}[A-Z]?|[A-Z0-9]{6,10})",
+            'Data_Rilascio': r"(?:Rilasciat[oa]|Emess[oa]|Data\s*di\s*rilascio|Date\s*of\s*issue)[:\s]*\n?\s*(?:il\s*)?(\d{1,2}[/\.\-\s]\d{1,2}[/\.\-\s]\d{4})",
+            'Data_Scadenza': r"(?:Scadenza|Valid[oa]\s*fino\s*al|Date\s*of\s*expiry)[:\s]*\n?\s*(\d{1,2}[/\.\-\s]\d{1,2}[/\.\-\s]\d{4})",
+            'Comune_Rilascio': r"(?:Comune\s*di|Rilasciat[oa]\s*da|Issued\s*by)[:\s]*\n?\s*([A-Z][A-Za-z\s]+?)(?:\s*\(|,|\n|$)",
+            'Tipo_Documento': r"(CARTA\s*D[\'I]?\s*IDENTIT[AÀ]|PATENTE|PASSAPORTO|IDENTITY\s*CARD)"
         }
-        
+
         for key, pattern in patterns.items():
             value = self.extract_pattern(text, pattern)
             if value:
-                data[key] = value.strip()
-        
+                # Pulizia del valore estratto
+                cleaned_value = value.strip()
+                # Rimuovi spazi multipli
+                cleaned_value = re.sub(r'\s+', ' ', cleaned_value)
+                # Normalizza date
+                if 'Data' in key and cleaned_value:
+                    cleaned_value = re.sub(r'[/\.\-\s]+', '/', cleaned_value)
+                data[key] = cleaned_value
+
         return data
     
     def is_visura_camerale(self, text):
@@ -156,7 +178,11 @@ class DocumentExtractor:
     
     def is_documento_identita(self, text):
         """Determina se il testo è di un documento d'identità"""
-        keywords = ['carta identita', 'patente', 'passaporto', 'documento', 'rilasciato']
+        keywords = [
+            'carta identita', 'identity card', 'patente', 'passaporto',
+            'documento', 'rilasciato', 'luogo di nascita', 'data di nascita',
+            'residenza', 'comune di', 'cittadinanza', 'codice fiscale'
+        ]
         text_lower = text.lower()
         return sum(1 for keyword in keywords if keyword in text_lower) >= 2
 
@@ -286,16 +312,23 @@ def main():
                             text = extractor.extract_text_from_image(image)
                         
                         if text:
+                            # Debug: mostra testo estratto
+                            with st.expander("🔍 Visualizza testo estratto dall'OCR"):
+                                st.text(text)
+
                             data = extractor.parse_documento_identita(text)
                             data['Nome_File'] = doc_file.name
                             data['Tipo_Documento'] = 'Documento Identità'
                             data['Data_Elaborazione'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            
+
                             st.session_state.extracted_data = data
                             st.session_state.processed_docs += 1
-                            
-                            st.success("✅ Dati estratti con successo!")
-                            st.balloons()
+
+                            if len(data) > 3:  # Se ha estratto più di 3 campi
+                                st.success("✅ Dati estratti con successo!")
+                                st.balloons()
+                            else:
+                                st.warning("⚠️ Alcuni dati potrebbero non essere stati estratti. Controlla la qualità dell'immagine.")
         
         # Elaborazione Batch
         st.markdown("---")
@@ -466,10 +499,13 @@ def main():
         
         **Dal Documento d'Identità:**
         - Nome e Cognome
-        - Data e Luogo di Nascita
+        - Data e Luogo di Nascita (con Provincia)
         - Codice Fiscale
+        - Residenza e Comune di Residenza
         - Numero Documento
         - Data di Rilascio e Scadenza
+        - Comune di Rilascio
+        - Sesso, Statura, Cittadinanza
         - Tipo Documento
         
         ---
