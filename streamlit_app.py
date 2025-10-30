@@ -209,7 +209,7 @@ def main():
     
     # Sidebar
     with st.sidebar:
-        st.image("https://via.placeholder.com/300x100/1E88E5/ffffff?text=Document+Extractor", use_column_width=True)
+        st.markdown("# 📄 Document Extractor")
         st.markdown("---")
         
         st.markdown("### 📋 Informazioni")
