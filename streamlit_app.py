@@ -109,27 +109,40 @@ class DocumentExtractor:
     def parse_visura_camerale(self, text):
         """Analizza il testo della visura camerale ed estrae i dati"""
         data = {}
-        
+
         patterns = {
-            'Denominazione': r"(?:Denominazione|Ragione sociale)[:\s]*([A-Z][^\n]+)",
-            'Partita_IVA': r"(?:P\.IVA|Partita IVA)[:\s]*(\d{11})",
-            'Codice_Fiscale': r"(?:Codice Fiscale|C\.F\.)[:\s]*([A-Z0-9]{11,16})",
-            'Numero_REA': r"(?:REA|N\. REA)[:\s]*([A-Z]{2}[\s\-]?\d+)",
-            'Forma_Giuridica': r"(?:Forma giuridica|Natura giuridica)[:\s]*([^\n]+)",
-            'Sede_Legale': r"(?:Sede legale|Indirizzo)[:\s]*([^\n]+?)(?:\d{5})",
-            'CAP': r"(\d{5})",
-            'Comune': r"\d{5}\s+([A-Z][A-Za-z\s]+?)(?:\(|Provincia)",
-            'Provincia': r"(?:Provincia|\()\s*([A-Z]{2})\s*(?:\)|$)",
-            'Data_Costituzione': r"(?:Data costituzione|Costituita il)[:\s]*(\d{2}/\d{2}/\d{4})",
-            'Capitale_Sociale': r"(?:Capitale sociale|Capitale)[:\s]*(?:€|EUR)?\s*([\d.,]+)",
-            'Stato_Attivita': r"(?:Stato)[:\s]*(ATTIVA|CESSATA|SOSPESA)"
+            'Denominazione': r"(?:Denominazione|Ragione sociale)[:\s]*\n?\s*([A-Z][^\n]+)",
+            'Partita_IVA': r"(?:P\.?\s*IVA|Partita\s+IVA)[:\s]*\n?\s*(\d{11})",
+            'Codice_Fiscale': r"(?:Codice\s+Fiscale|C\.?\s*F\.?)[:\s]*\n?\s*([A-Z0-9]{11,16})",
+            'Numero_REA': r"(?:REA|N\.?\s*REA|Numero\s+REA)[:\s]*\n?\s*([A-Z]{2}[\s\-]?\d+)",
+            'Forma_Giuridica': r"(?:Forma\s+giuridica|Natura\s+giuridica)[:\s]*\n?\s*([^\n]+)",
+            'Sede_Legale': r"(?:Sede\s+legale|Indirizzo)[:\s]*\n?\s*([^\n]+?)(?:\s*\d{5}|\n)",
+            'CAP': r"(?:^|\s|-)(\d{5})(?:\s+[A-Z]|\s*-|\s*\()",
+            'Comune': r"(?:\d{5}\s*[-,]?\s*|Comune[:\s]+)([A-Z][A-Za-z][A-Za-z\s\'\.]+?)(?:\s*[\(\-]|,?\s*(?:Provincia|Prov\.?)\s*[:\(]|\s+[A-Z]{2}\s*[\)\-])",
+            'Provincia': r"(?:Provincia|Prov\.?|Sigla)[:\s]*\(?\s*([A-Z]{2})\s*\)?|(?:^|\s)\(([A-Z]{2})\)",
+            'Data_Costituzione': r"(?:Data\s+costituzione|Costituita\s+il|Data\s+iscrizione)[:\s]*\n?\s*(\d{1,2}[/\.\-]\d{1,2}[/\.\-]\d{4})",
+            'Capitale_Sociale': r"(?:Capitale\s+sociale|Capitale)[:\s]*\n?\s*(?:€|EUR|Euro)?\s*([\d\.,]+)",
+            'Stato_Attivita': r"(?:Stato)[:\s]*\n?\s*(ATTIVA|ATTIVO|CESSATA|CESSATO|SOSPESA|SOSPESO)"
         }
-        
+
         for key, pattern in patterns.items():
             value = self.extract_pattern(text, pattern)
             if value:
-                data[key] = value.strip()
-        
+                # Pulizia del valore estratto
+                cleaned_value = value.strip()
+                # Rimuovi spazi multipli
+                cleaned_value = re.sub(r'\s+', ' ', cleaned_value)
+                # Pulizia specifica per il Comune (rimuovi virgole e trattini finali)
+                if key == 'Comune':
+                    cleaned_value = re.sub(r'[,\-\s]+$', '', cleaned_value)
+                data[key] = cleaned_value
+
+        # Fallback per Provincia: cerca nel gruppo 2 se gruppo 1 non ha funzionato
+        if 'Provincia' not in data or not data['Provincia']:
+            match = re.search(r"(?:^|\s)\(([A-Z]{2})\)", text, re.IGNORECASE | re.MULTILINE)
+            if match:
+                data['Provincia'] = match.group(1)
+
         return data
     
     def parse_documento_identita(self, text):
@@ -273,16 +286,23 @@ def main():
                         text = extractor.extract_text_from_pdf(visura_file)
                         
                         if text:
+                            # Debug: mostra testo estratto
+                            with st.expander("🔍 Visualizza testo estratto dal PDF"):
+                                st.text(text[:2000])  # Mostra primi 2000 caratteri
+
                             data = extractor.parse_visura_camerale(text)
                             data['Nome_File'] = visura_file.name
                             data['Tipo_Documento'] = 'Visura Camerale'
                             data['Data_Elaborazione'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            
+
                             st.session_state.extracted_data = data
                             st.session_state.processed_docs += 1
-                            
-                            st.success("✅ Dati estratti con successo!")
-                            st.balloons()
+
+                            if len(data) > 3:  # Se ha estratto più di 3 campi
+                                st.success("✅ Dati estratti con successo!")
+                                st.balloons()
+                            else:
+                                st.warning("⚠️ Alcuni dati potrebbero non essere stati estratti. Verifica il formato del PDF.")
         
         with col2:
             st.markdown("#### 🆔 Documento d'Identità")
