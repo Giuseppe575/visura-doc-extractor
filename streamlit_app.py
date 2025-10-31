@@ -12,6 +12,7 @@ import re
 from datetime import datetime
 import io
 import base64
+from pathlib import Path
 
 # Configurazione pagina
 st.set_page_config(
