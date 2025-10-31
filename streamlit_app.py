@@ -164,37 +164,198 @@ class DocumentExtractor:
         """Analizza il testo del documento d'identità ed estrae i dati"""
         data = {}
 
-        # Pattern migliorati per carte d'identità italiane
-        patterns = {
-            'Cognome': r"(?:Cognome|COGNOME|Surname)[:\s]*\n?\s*([A-Z\s]+?)(?:\n|Nome|NOME|$)",
-            'Nome': r"(?:Nome|NOME|Name)[:\s]*\n?\s*([A-Z][A-Za-z\s]+?)(?:\n|Luogo|Nat|Data|$)",
-            'Luogo_Nascita': r"(?:Luogo\s*di\s*nascita|Nat[oa]\s*a|Place\s*of\s*birth)[:\s]*\n?\s*([A-Z][A-Za-z\s\']+?)(?:\s*\(|,|\n|il|$)",
-            'Provincia_Nascita': r"(?:Luogo\s*di\s*nascita|Nat[oa]\s*a)[:\s]*[^(\n]*\(([A-Z]{2})\)",
-            'Data_Nascita': r"(?:Data\s*di\s*nascita|Nat[oa]\s*il|Date\s*of\s*birth)[:\s]*\n?\s*(\d{1,2}[/\.\-\s]\d{1,2}[/\.\-\s]\d{4})",
-            'Sesso': r"(?:Sesso|Sex)[:\s]*\n?\s*([MF])",
-            'Statura': r"(?:Statura|Height)[:\s]*\n?\s*(\d+[\.,]?\d*)\s*(?:cm|m)?",
-            'Cittadinanza': r"(?:Cittadinanza|Citizenship)[:\s]*\n?\s*([A-Z][A-Za-z]+)",
-            'Residenza': r"(?:Residenza|Residence|Indirizzo)[:\s]*\n?\s*([A-Z][A-Za-z0-9\s,\.\']+?)(?:\n\n|\n[A-Z]{2}\d{7}|Rilascia)",
-            'Comune_Residenza': r"(?:Comune|Municipality)[:\s]*\n?\s*([A-Z][A-Za-z\s]+?)(?:\s*\(|,|\n|$)",
-            'CF_Persona': r"([A-Z]{6}\d{2}[A-Z]\d{2}[A-Z]\d{3}[A-Z])",
-            'Numero_Documento': r"(?:Carta\s*d[\'i]?\s*identit[aà]\s*n|Numero|N\.|Document\s*no)[:\.]?\s*\n?\s*([A-Z]{2}\s*\d{7}[A-Z]?|[A-Z0-9]{6,10})",
-            'Data_Rilascio': r"(?:Rilasciat[oa]|Emess[oa]|Data\s*di\s*rilascio|Date\s*of\s*issue)[:\s]*\n?\s*(?:il\s*)?(\d{1,2}[/\.\-\s]\d{1,2}[/\.\-\s]\d{4})",
-            'Data_Scadenza': r"(?:Scadenza|Valid[oa]\s*fino\s*al|Date\s*of\s*expiry)[:\s]*\n?\s*(\d{1,2}[/\.\-\s]\d{1,2}[/\.\-\s]\d{4})",
-            'Comune_Rilascio': r"(?:Comune\s*di|Rilasciat[oa]\s*da|Issued\s*by)[:\s]*\n?\s*([A-Z][A-Za-z\s]+?)(?:\s*\(|,|\n|$)",
-            'Tipo_Documento': r"(CARTA\s*D[\'I]?\s*IDENTIT[AÀ]|PATENTE|PASSAPORTO|IDENTITY\s*CARD)"
-        }
+        # Normalizza il testo per facilitare matching
+        text_clean = text.replace('\n', ' ').replace('  ', ' ')
 
-        for key, pattern in patterns.items():
-            value = self.extract_pattern(text, pattern)
-            if value:
-                # Pulizia del valore estratto
-                cleaned_value = value.strip()
-                # Rimuovi spazi multipli
-                cleaned_value = re.sub(r'\s+', ' ', cleaned_value)
-                # Normalizza date
-                if 'Data' in key and cleaned_value:
-                    cleaned_value = re.sub(r'[/\.\-\s]+', '/', cleaned_value)
-                data[key] = cleaned_value
+        # Pattern multipli per ogni campo (più flessibili)
+
+        # CODICE FISCALE (priorità alta - più affidabile)
+        cf_patterns = [
+            r"([A-Z]{6}\d{2}[A-Z]\d{2}[A-Z]\d{3}[A-Z])",  # Standard
+            r"(?:CF|C\.F\.|Codice\s*Fiscale)[:\s]*([A-Z]{6}\d{2}[A-Z]\d{2}[A-Z]\d{3}[A-Z])",
+        ]
+        for pattern in cf_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                data['CF_Persona'] = match.group(1) if len(match.groups()) == 1 else match.group(2)
+                break
+
+        # COGNOME (multipli pattern)
+        cognome_patterns = [
+            r"(?:Cognome|COGNOME|Surname)[:\s]+([A-Z][A-Z\s]+?)(?:\s+Nome|\s+NOME|\s+Name|\n)",
+            r"(?:Cognome|COGNOME)[:\s]*\n+([A-Z][A-Z\s]+)",
+            r"^([A-Z]{2,}(?:\s+[A-Z]{2,})*)\s+(?:[A-Z][a-z]+|NOME)",  # ROSSI Mario
+        ]
+        for pattern in cognome_patterns:
+            match = re.search(pattern, text, re.MULTILINE)
+            if match and not data.get('Cognome'):
+                data['Cognome'] = match.group(1).strip()
+                break
+
+        # NOME (multipli pattern)
+        nome_patterns = [
+            r"(?:Nome|NOME|Name)[:\s]+([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)?)",
+            r"(?:Cognome|COGNOME)[^\n]+\n+(?:Nome|NOME)[:\s]*\n*([A-Z][A-Za-z]+)",
+            r"[A-Z]{2,}\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\s+(?:nato|Nat)",  # ROSSI Mario nato
+        ]
+        for pattern in nome_patterns:
+            match = re.search(pattern, text, re.MULTILINE | re.IGNORECASE)
+            if match and not data.get('Nome'):
+                data['Nome'] = match.group(1).strip()
+                break
+
+        # DATA DI NASCITA (molto flessibile)
+        data_nascita_patterns = [
+            r"(?:nat[oa]\s+il|Data\s+di\s+nascita|Date\s+of\s+birth)[:\s]*(\d{1,2}[/\.\-\s]\d{1,2}[/\.\-\s]\d{2,4})",
+            r"(\d{1,2}[/\.\-]\d{1,2}[/\.\-]\d{4})",  # Qualsiasi data
+            r"(?:il|del)\s+(\d{1,2}[/\.\-\s]\d{1,2}[/\.\-\s]\d{2,4})",
+        ]
+        for pattern in data_nascita_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match and not data.get('Data_Nascita'):
+                date_str = match.group(1).strip()
+                # Normalizza la data
+                date_str = re.sub(r'[/\.\-\s]+', '/', date_str)
+                # Se anno a 2 cifre, converti a 4
+                parts = date_str.split('/')
+                if len(parts) == 3 and len(parts[2]) == 2:
+                    year = int(parts[2])
+                    parts[2] = f"19{year}" if year > 30 else f"20{year}"
+                    date_str = '/'.join(parts)
+                data['Data_Nascita'] = date_str
+                break
+
+        # LUOGO DI NASCITA
+        luogo_patterns = [
+            r"(?:nat[oa]\s+a|nato\s+il\s+\d+[/\-\.]\d+[/\-\.]\d+\s+a)\s+([A-Z][A-Za-z\s']+?)(?:\s*\([A-Z]{2}\)|$|\s+il|\s+\d)",
+            r"(?:Luogo\s+di\s+nascita|Place\s+of\s+birth)[:\s]*([A-Z][A-Za-z\s']+?)(?:\s*\(|$|\n)",
+            r"(?:Comune\s+di\s+nascita)[:\s]*([A-Z][A-Za-z\s']+)",
+        ]
+        for pattern in luogo_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match and not data.get('Luogo_Nascita'):
+                luogo = match.group(1).strip()
+                # Rimuovi date se catturate per errore
+                luogo = re.sub(r'\d+[/\-\.]\d+[/\-\.]\d+', '', luogo).strip()
+                if luogo and len(luogo) > 2:
+                    data['Luogo_Nascita'] = luogo
+                break
+
+        # PROVINCIA NASCITA
+        prov_patterns = [
+            r"(?:nat[oa]\s+a)[^\n]*\(([A-Z]{2})\)",
+            r"([A-Z]{2})\s*\)\s*il\s+\d",
+            r"\(\s*([A-Z]{2})\s*\)",
+        ]
+        for pattern in prov_patterns:
+            match = re.search(pattern, text)
+            if match and not data.get('Provincia_Nascita'):
+                data['Provincia_Nascita'] = match.group(1)
+                break
+
+        # SESSO
+        sesso_patterns = [
+            r"(?:Sesso|Sex)[:\s]*([MF])",
+            r"\b([MF])\b(?:\s+\d{3}\s+cm|\s+nat)",  # M 180 cm o M nato
+        ]
+        for pattern in sesso_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match and not data.get('Sesso'):
+                data['Sesso'] = match.group(1).upper()
+                break
+
+        # STATURA
+        statura_patterns = [
+            r"(?:Statura|Height)[:\s]*(\d{2,3})\s*(?:cm)?",
+            r"([MF])\s+(\d{3})\s*cm",  # M 180 cm
+            r"(\d{3})\s*cm",
+        ]
+        for pattern in statura_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match and not data.get('Statura'):
+                statura = match.group(2) if len(match.groups()) > 1 else match.group(1)
+                data['Statura'] = statura
+                break
+
+        # CITTADINANZA
+        if 'ITALIANA' in text.upper() or 'ITALY' in text.upper():
+            data['Cittadinanza'] = 'ITALIANA'
+
+        # RESIDENZA (pattern semplificato)
+        residenza_patterns = [
+            r"(?:Residenza|Residence)[:\s]*([A-Z][A-Za-z0-9\s,\.'-]+?)(?:\n\n|Rilasciat)",
+            r"(?:Via|Viale|Piazza|Corso)\s+([A-Za-z0-9\s,\.'-]+?)(?:\d{5}|\n)",
+        ]
+        for pattern in residenza_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match and not data.get('Residenza'):
+                data['Residenza'] = match.group(1).strip()
+                break
+
+        # COMUNE RESIDENZA
+        comune_res_patterns = [
+            r"(?:Comune)[:\s]*([A-Z][A-Za-z\s]+?)(?:\s*\(|$|\n)",
+            r"\d{5}\s+([A-Z][A-Za-z\s]+?)(?:\s*\([A-Z]{2}\)|$)",
+        ]
+        for pattern in comune_res_patterns:
+            match = re.search(pattern, text)
+            if match and not data.get('Comune_Residenza'):
+                data['Comune_Residenza'] = match.group(1).strip()
+                break
+
+        # NUMERO DOCUMENTO (CI elettronica formato: CA12345AA o simili)
+        numero_patterns = [
+            r"(?:N\.|Numero|Nr)[:\s]*([A-Z]{2}\s*\d{5,7}\s*[A-Z]{0,2})",
+            r"([A-Z]{2}\d{5,7}[A-Z]{0,2})",  # CA12345AA
+            r"Carta\s+d[''i]?\s*identit[aà]\s+(?:N\.?|n\.?)\s*([A-Z0-9]{6,10})",
+        ]
+        for pattern in numero_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match and not data.get('Numero_Documento'):
+                numero = match.group(1).replace(' ', '')
+                data['Numero_Documento'] = numero
+                break
+
+        # DATA RILASCIO
+        rilascio_patterns = [
+            r"(?:Rilasciat[oa]\s+il|Emess[oa]\s+il|Data\s+di\s+rilascio)[:\s]*(\d{1,2}[/\.\-]\d{1,2}[/\.\-]\d{2,4})",
+            r"(?:del|il)\s+(\d{1,2}[/\.\-]\d{1,2}[/\.\-]\d{4})",
+        ]
+        for pattern in rilascio_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match and not data.get('Data_Rilascio'):
+                data['Data_Rilascio'] = re.sub(r'[/\.\-\s]+', '/', match.group(1))
+                break
+
+        # DATA SCADENZA
+        scadenza_patterns = [
+            r"(?:Scadenza|valida\s+fino\s+al)[:\s]*(\d{1,2}[/\.\-]\d{1,2}[/\.\-]\d{2,4})",
+            r"(?:Valid until|Date of expiry)[:\s]*(\d{1,2}[/\.\-]\d{1,2}[/\.\-]\d{2,4})",
+        ]
+        for pattern in scadenza_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match and not data.get('Data_Scadenza'):
+                data['Data_Scadenza'] = re.sub(r'[/\.\-\s]+', '/', match.group(1))
+                break
+
+        # COMUNE RILASCIO
+        comune_rilascio_patterns = [
+            r"(?:Comune\s+di|Rilasciat[oa]\s+da)[:\s]*([A-Z][A-Za-z\s]+?)(?:\s*\n|$|il)",
+            r"(?:Sindaco\s+del\s+Comune\s+di)[:\s]*([A-Z][A-Za-z\s]+)",
+        ]
+        for pattern in comune_rilascio_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match and not data.get('Comune_Rilascio'):
+                data['Comune_Rilascio'] = match.group(1).strip()
+                break
+
+        # TIPO DOCUMENTO
+        if any(keyword in text.upper() for keyword in ['CARTA', 'IDENTITA', 'IDENTITY']):
+            data['Tipo_Documento'] = "CARTA D'IDENTITA"
+        elif 'PATENTE' in text.upper():
+            data['Tipo_Documento'] = 'PATENTE'
+        elif 'PASSAPORTO' in text.upper() or 'PASSPORT' in text.upper():
+            data['Tipo_Documento'] = 'PASSAPORTO'
 
         return data
     
