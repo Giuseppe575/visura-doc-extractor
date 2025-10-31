@@ -479,45 +479,152 @@ def main():
         )
         
         if batch_files and st.button("🚀 Elabora Tutti i Documenti"):
-            all_data = []
+            visure_data = []
+            documenti_data = []
+            unmatched_data = []
+
             progress_bar = st.progress(0)
             status_text = st.empty()
-            
+
+            # Fase 1: Estrazione dati da tutti i file
+            status_text.text("Fase 1/2: Estrazione dati dai documenti...")
+
             for idx, file in enumerate(batch_files):
-                status_text.text(f"Elaborazione: {file.name} ({idx+1}/{len(batch_files)})")
-                
                 extractor = DocumentExtractor()
-                
+
                 try:
                     if file.type == 'application/pdf':
                         text = extractor.extract_text_from_pdf(file)
                     else:
                         image = Image.open(file)
                         text = extractor.extract_text_from_image(image)
-                    
+
                     if text:
                         if extractor.is_visura_camerale(text):
                             data = extractor.parse_visura_camerale(text)
+                            data['Nome_File'] = file.name
                             data['Tipo_Documento'] = 'Visura Camerale'
+                            visure_data.append(data)
                         elif extractor.is_documento_identita(text):
                             data = extractor.parse_documento_identita(text)
+                            data['Nome_File'] = file.name
                             data['Tipo_Documento'] = 'Documento Identità'
+                            documenti_data.append(data)
                         else:
-                            data = {'Tipo_Documento': 'Non Riconosciuto'}
-                        
-                        data['Nome_File'] = file.name
-                        data['Data_Elaborazione'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        all_data.append(data)
-                        
+                            unmatched_data.append({
+                                'Nome_File': file.name,
+                                'Tipo_Documento': 'Non Riconosciuto',
+                                'Errore': 'Tipo documento non identificato'
+                            })
+
                 except Exception as e:
                     st.warning(f"⚠️ Errore con {file.name}: {str(e)}")
-                
-                progress_bar.progress((idx + 1) / len(batch_files))
-            
-            st.session_state.batch_data = all_data
-            st.session_state.processed_docs += len(all_data)
+                    unmatched_data.append({
+                        'Nome_File': file.name,
+                        'Tipo_Documento': 'Errore',
+                        'Errore': str(e)
+                    })
+
+                progress_bar.progress((idx + 1) / (len(batch_files) * 2))
+
+            # Fase 2: Matching e creazione template
+            status_text.text("Fase 2/2: Matching documenti e creazione formato template...")
+
+            template_rows = []
+            matched_visure = set()
+            matched_documenti = set()
+
+            # Strategia 1: Match per codice fiscale
+            for i, visura in enumerate(visure_data):
+                cf_azienda = visura.get('Codice_Fiscale', '')
+
+                # Cerca documento con stesso CF
+                for j, doc in enumerate(documenti_data):
+                    cf_persona = doc.get('CF_Persona', '')
+
+                    # Match se il CF azienda coincide con CF persona (impresa individuale)
+                    # oppure se abbiamo altri criteri di matching
+                    if cf_azienda and cf_persona and (cf_azienda == cf_persona):
+                        # Crea riga template
+                        template_df = map_data_to_template(visura, doc)
+                        template_rows.append(template_df)
+                        matched_visure.add(i)
+                        matched_documenti.add(j)
+                        break
+
+            # Strategia 2: Match per nome file (pattern comune)
+            for i, visura in enumerate(visure_data):
+                if i in matched_visure:
+                    continue
+
+                # Estrai pattern dal nome file (es. partita IVA, codice fiscale)
+                visura_file = visura.get('Nome_File', '').lower()
+
+                for j, doc in enumerate(documenti_data):
+                    if j in matched_documenti:
+                        continue
+
+                    doc_file = doc.get('Nome_File', '').lower()
+
+                    # Cerca pattern comuni nei nomi dei file
+                    # Es: entrambi contengono lo stesso codice fiscale o nome azienda
+                    cf_visura = visura.get('Codice_Fiscale', '')
+                    if cf_visura and cf_visura.lower() in doc_file:
+                        template_df = map_data_to_template(visura, doc)
+                        template_rows.append(template_df)
+                        matched_visure.add(i)
+                        matched_documenti.add(j)
+                        break
+
+            # Strategia 3: Abbinamento manuale per ordine (se caricati in coppia)
+            remaining_visure = [v for i, v in enumerate(visure_data) if i not in matched_visure]
+            remaining_docs = [d for j, d in enumerate(documenti_data) if j not in matched_documenti]
+
+            # Se abbiamo lo stesso numero, abbiniamo per ordine
+            if len(remaining_visure) == len(remaining_docs):
+                for visura, doc in zip(remaining_visure, remaining_docs):
+                    template_df = map_data_to_template(visura, doc)
+                    template_rows.append(template_df)
+                    matched_visure.add(visure_data.index(visura))
+                    matched_documenti.add(documenti_data.index(doc))
+            else:
+                # Abbina quelli rimanenti singolarmente
+                for visura in remaining_visure:
+                    template_df = map_data_to_template(visura, {})
+                    template_rows.append(template_df)
+
+                for doc in remaining_docs:
+                    template_df = map_data_to_template({}, doc)
+                    template_rows.append(template_df)
+
+            # Combina tutti i DataFrame template in uno unico
+            if template_rows:
+                batch_template_df = pd.concat(template_rows, ignore_index=True)
+                st.session_state.batch_template_data = batch_template_df
+            else:
+                st.session_state.batch_template_data = None
+
+            # Salva anche i dati non matchati per riferimento
+            st.session_state.batch_unmatched = unmatched_data
+            st.session_state.processed_docs += len(batch_files)
+
+            progress_bar.progress(1.0)
             status_text.text("")
-            st.success(f"✅ Elaborati {len(all_data)} documenti su {len(batch_files)}")
+
+            # Statistiche finali
+            st.success(f"✅ Elaborazione completata!")
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("📄 Totale file", len(batch_files))
+            with col2:
+                st.metric("📋 Visure", len(visure_data))
+            with col3:
+                st.metric("🆔 Documenti", len(documenti_data))
+            with col4:
+                st.metric("✅ Righe template", len(template_rows) if template_rows else 0)
+
+            if unmatched_data:
+                st.warning(f"⚠️ {len(unmatched_data)} file non riconosciuti o con errori")
     
     with tab2:
         st.markdown("### 📊 Dati Estratti")
@@ -583,45 +690,66 @@ def main():
                     df_doc = pd.DataFrame([st.session_state.documento_data])
                     st.dataframe(df_doc, use_container_width=True)
         
-        # Visualizza dati batch
-        if 'batch_data' in st.session_state and st.session_state.batch_data:
+        # Visualizza dati batch nel formato template
+        if 'batch_template_data' in st.session_state and st.session_state.batch_template_data is not None:
             st.markdown("---")
-            st.markdown("#### Elaborazione Batch")
-            
-            df_batch = pd.DataFrame(st.session_state.batch_data)
-            
+            st.markdown("#### 📦 Elaborazione Batch - Formato Template")
+            st.success("✅ Tutti i documenti batch sono stati mappati al formato import")
+
+            df_batch = st.session_state.batch_template_data
+
             # Statistiche
             st.markdown('<div class="success-box">', unsafe_allow_html=True)
             col1, col2, col3, col4 = st.columns(4)
             with col1:
-                st.metric("📊 Totale", len(df_batch))
+                st.metric("📊 Righe totali", len(df_batch))
             with col2:
-                visure = len(df_batch[df_batch['Tipo_Documento'] == 'Visura Camerale'])
-                st.metric("📄 Visure", visure)
+                total_cols = len(df_batch.columns)
+                st.metric("📋 Colonne template", total_cols)
             with col3:
-                doc_id = len(df_batch[df_batch['Tipo_Documento'] == 'Documento Identità'])
-                st.metric("🆔 Documenti ID", doc_id)
+                # Media campi compilati per riga
+                avg_filled = df_batch.notna().sum(axis=1).mean()
+                st.metric("📈 Media campi/riga", f"{int(avg_filled)}")
             with col4:
-                non_ric = len(df_batch[df_batch['Tipo_Documento'] == 'Non Riconosciuto'])
-                st.metric("❓ Non riconosciuti", non_ric)
+                # Percentuale media completamento
+                avg_percentage = (avg_filled / total_cols * 100) if total_cols > 0 else 0
+                st.metric("✅ Completamento medio", f"{avg_percentage:.1f}%")
             st.markdown('</div>', unsafe_allow_html=True)
-            
-            # Tabella
-            st.dataframe(df_batch, use_container_width=True)
-            
+
+            # Anteprima colonne chiave
+            st.markdown("##### 🔍 Anteprima Dati Principali")
+            key_columns = ['Ragionesociale', 'Codfisc Azienda', 'Partita Iva Azienda',
+                          'Nome 1', 'Cognome 1', 'Codfisc 1', 'Comune Sede']
+            available_cols = [col for col in key_columns if col in df_batch.columns]
+            if available_cols:
+                st.dataframe(df_batch[available_cols], use_container_width=True)
+
+            # Tabella completa espandibile
+            with st.expander("📋 Visualizza Tutte le Colonne del Template"):
+                st.dataframe(df_batch, use_container_width=True)
+
+            # Info su file non matchati
+            if 'batch_unmatched' in st.session_state and st.session_state.batch_unmatched:
+                with st.expander("⚠️ File Non Riconosciuti o con Errori"):
+                    df_unmatched = pd.DataFrame(st.session_state.batch_unmatched)
+                    st.dataframe(df_unmatched, use_container_width=True)
+
             # Download batch
-            st.markdown("#### 💾 Download Batch")
+            st.markdown("#### 💾 Download Batch Formato Template")
             col1, col2 = st.columns(2)
-            
+
             with col1:
                 if export_format in ["Excel (.xlsx)", "Entrambi"]:
-                    st.markdown(create_download_link(df_batch, "batch_risultati", "excel"), unsafe_allow_html=True)
-            
+                    st.markdown(create_download_link(df_batch, "batch_formato_import", "excel"), unsafe_allow_html=True)
+
             with col2:
                 if export_format in ["CSV (.csv)", "Entrambi"]:
-                    st.markdown(create_download_link(df_batch, "batch_risultati", "csv"), unsafe_allow_html=True)
-        
-        if 'extracted_data' not in st.session_state and 'batch_data' not in st.session_state:
+                    st.markdown(create_download_link(df_batch, "batch_formato_import", "csv"), unsafe_allow_html=True)
+
+        if ('combined_data' not in st.session_state and
+            'batch_template_data' not in st.session_state and
+            'visura_data' not in st.session_state and
+            'documento_data' not in st.session_state):
             st.info("👆 Carica ed elabora un documento nella tab **Carica Documento** per visualizzare i risultati qui")
     
     with tab3:
