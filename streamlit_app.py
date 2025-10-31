@@ -213,6 +213,89 @@ class DocumentExtractor:
         text_lower = text.lower()
         return sum(1 for keyword in keywords if keyword in text_lower) >= 2
 
+def load_template():
+    """Carica il template Excel"""
+    template_path = Path(__file__).parent / "format_import_template.xlsx"
+    try:
+        if template_path.exists():
+            df = pd.read_excel(template_path)
+            return df.columns.tolist()
+        return None
+    except Exception as e:
+        st.error(f"Errore nel caricamento del template: {e}")
+        return None
+
+def map_data_to_template(visura_data, documento_data):
+    """Mappa i dati estratti alle colonne del template"""
+    # Carica le colonne del template
+    template_columns = load_template()
+
+    # Se il template non esiste, usa il formato standard
+    if not template_columns:
+        # Combina i dati in formato standard
+        combined = {**visura_data, **documento_data}
+        return pd.DataFrame([combined])
+
+    # Inizializza riga con tutte le colonne a None
+    row = {col: None for col in template_columns}
+
+    # Mappa dati della visura
+    if visura_data:
+        row['Pers Soc'] = 'S' if visura_data.get('Denominazione') else 'P'
+        row['Ragionesociale'] = visura_data.get('Denominazione', '')
+        row['Intestazione'] = visura_data.get('Denominazione', '')
+        row['Natura Giuridica'] = visura_data.get('Forma_Giuridica', '')
+        row['Codfisc Azienda'] = visura_data.get('Codice_Fiscale', '')
+        row['Partita Iva Azienda'] = visura_data.get('Partita_IVA', '')
+        row['Cciaa'] = visura_data.get('Numero_REA', '')
+        row['Indirizzo Sede'] = visura_data.get('Sede_Legale', '')
+        row['Comune Sede'] = visura_data.get('Comune', '')
+        row['Cap Sede'] = visura_data.get('CAP', '')
+        row['Prov Sede'] = visura_data.get('Provincia', '')
+        row['Stato Sede'] = 'ITALIA'
+        row['Data Ini Rapporto'] = visura_data.get('Data_Costituzione', '')
+        row['Prest Prof'] = 'Tenuta della Contabilità'
+        row['Tipo Ident'] = 'Diretta'
+        row['Data Ident'] = datetime.now().strftime('%Y-%m-%d')
+        row['Pep'] = 'NO'
+
+    # Mappa dati del documento
+    if documento_data:
+        row['Carica 1'] = 'TITOLARE' if visura_data else 'RAPPRESENTANTE LEGALE'
+        row['Nome 1'] = documento_data.get('Nome', '')
+        row['Cognome 1'] = documento_data.get('Cognome', '')
+        row['Sesso 1'] = documento_data.get('Sesso', '')
+        row['Data Nas 1'] = documento_data.get('Data_Nascita', '')
+        row['Comune Nas 1'] = documento_data.get('Luogo_Nascita', '')
+        row['Provincia Nas 1'] = documento_data.get('Provincia_Nascita', '')
+        row['Stato Nas 1'] = 'ITALIA'
+        row['Codfisc 1'] = documento_data.get('CF_Persona', '')
+        row['Indirizzo Res 1'] = documento_data.get('Residenza', '')
+        row['Comune Res 1'] = documento_data.get('Comune_Residenza', '')
+        row['Prov Res 1'] = documento_data.get('Provincia_Nascita', '')
+        row['Stato Res 1'] = 'ITALIA'
+        row['Tipo Doc'] = documento_data.get('Tipo_Documento', '')
+        row['Num Doc'] = documento_data.get('Numero_Documento', '')
+        row['Data Doc'] = documento_data.get('Data_Rilascio', '')
+        row['Scadenza Doc'] = documento_data.get('Data_Scadenza', '')
+        row['Autorita Doc'] = documento_data.get('Comune_Rilascio', '')
+
+        # Copia dati anche come Titolare 1
+        row['Tit 1 Nome'] = documento_data.get('Nome', '')
+        row['Tit 1 Cognome'] = documento_data.get('Cognome', '')
+        row['Tit 1 Codfisc'] = documento_data.get('CF_Persona', '')
+        row['Tit 1 Sesso'] = documento_data.get('Sesso', '')
+        row['Tit 1 Datanas'] = documento_data.get('Data_Nascita', '')
+        row['Tit 1 Comunenas'] = documento_data.get('Luogo_Nascita', '')
+        row['Tit 1 Provincia Nas'] = documento_data.get('Provincia_Nascita', '')
+        row['Tit 1 Stato Nas'] = 'ITALIA'
+        row['Tit 1 Tipodoc'] = documento_data.get('Tipo_Documento', '')
+        row['Tit 1 Numdoc'] = documento_data.get('Numero_Documento', '')
+        row['Tit 1 Rilasc Da'] = documento_data.get('Comune_Rilascio', '')
+        row['Tit 1 Scad Doc'] = documento_data.get('Data_Scadenza', '')
+
+    return pd.DataFrame([row])
+
 def create_download_link(df, filename, file_format):
     """Crea un link per il download del file"""
     if file_format == 'excel':
@@ -279,9 +362,14 @@ def main():
     
     with tab1:
         st.markdown("### Carica il tuo documento")
-        
+
+        # Info sul template
+        template_exists = load_template() is not None
+        if template_exists:
+            st.info("📋 Template formato import rilevato - I dati saranno esportati nel formato personalizzato")
+
         col1, col2 = st.columns(2)
-        
+
         with col1:
             st.markdown("#### 📄 Visura Camerale")
             visura_file = st.file_uploader(
@@ -290,15 +378,15 @@ def main():
                 key='visura',
                 help="Carica il PDF della visura camerale ottenuto dalla Camera di Commercio"
             )
-            
+
             if visura_file:
                 st.success(f"✅ File caricato: {visura_file.name}")
-                
+
                 if st.button("🔍 Estrai Dati Visura", key='btn_visura'):
                     with st.spinner("Elaborazione in corso..."):
                         extractor = DocumentExtractor()
                         text = extractor.extract_text_from_pdf(visura_file)
-                        
+
                         if text:
                             # Debug: mostra testo estratto
                             with st.expander("🔍 Visualizza testo estratto dal PDF"):
@@ -309,7 +397,7 @@ def main():
                             data['Tipo_Documento'] = 'Visura Camerale'
                             data['Data_Elaborazione'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-                            st.session_state.extracted_data = data
+                            st.session_state.visura_data = data
                             st.session_state.processed_docs += 1
 
                             if len(data) > 3:  # Se ha estratto più di 3 campi
@@ -317,7 +405,7 @@ def main():
                                 st.balloons()
                             else:
                                 st.warning("⚠️ Alcuni dati potrebbero non essere stati estratti. Verifica il formato del PDF.")
-        
+
         with col2:
             st.markdown("#### 🆔 Documento d'Identità")
             doc_file = st.file_uploader(
@@ -326,25 +414,25 @@ def main():
                 key='documento',
                 help="Carica foto o scansione del documento d'identità"
             )
-            
+
             if doc_file:
                 st.success(f"✅ File caricato: {doc_file.name}")
-                
+
                 # Mostra preview dell'immagine
                 if doc_file.type.startswith('image'):
                     image = Image.open(doc_file)
                     st.image(image, caption="Preview documento", use_column_width=True)
-                
+
                 if st.button("🔍 Estrai Dati Documento", key='btn_doc'):
                     with st.spinner("Elaborazione in corso..."):
                         extractor = DocumentExtractor()
-                        
+
                         if doc_file.type == 'application/pdf':
                             text = extractor.extract_text_from_pdf(doc_file)
                         else:
                             image = Image.open(doc_file)
                             text = extractor.extract_text_from_image(image)
-                        
+
                         if text:
                             # Debug: mostra testo estratto
                             with st.expander("🔍 Visualizza testo estratto dall'OCR"):
@@ -355,7 +443,7 @@ def main():
                             data['Tipo_Documento'] = 'Documento Identità'
                             data['Data_Elaborazione'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-                            st.session_state.extracted_data = data
+                            st.session_state.documento_data = data
                             st.session_state.processed_docs += 1
 
                             if len(data) > 3:  # Se ha estratto più di 3 campi
@@ -363,6 +451,18 @@ def main():
                                 st.balloons()
                             else:
                                 st.warning("⚠️ Alcuni dati potrebbero non essere stati estratti. Controlla la qualità dell'immagine.")
+
+        # Pulsante per combinare i dati
+        st.markdown("---")
+        if 'visura_data' in st.session_state or 'documento_data' in st.session_state:
+            if st.button("🔄 Combina Visura e Documento nel Formato Template", use_container_width=True):
+                visura = st.session_state.get('visura_data', {})
+                documento = st.session_state.get('documento_data', {})
+
+                # Crea il DataFrame mappato al template
+                st.session_state.combined_data = map_data_to_template(visura, documento)
+                st.success("✅ Dati combinati nel formato template!")
+                st.info("📊 Vai alla tab 'Risultati' per scaricare il file Excel")
         
         # Elaborazione Batch
         st.markdown("---")
@@ -420,38 +520,67 @@ def main():
     
     with tab2:
         st.markdown("### 📊 Dati Estratti")
-        
-        # Visualizza dati singolo documento
-        if 'extracted_data' in st.session_state and st.session_state.extracted_data:
-            st.markdown("#### Ultimo Documento Elaborato")
-            data = st.session_state.extracted_data
-            
-            # Card informativa
-            st.markdown('<div class="info-box">', unsafe_allow_html=True)
+
+        # Visualizza dati combinati nel formato template
+        if 'combined_data' in st.session_state and st.session_state.combined_data is not None:
+            st.markdown("#### 📋 Dati nel Formato Template")
+            st.success("✅ I dati sono stati mappati al formato import personalizzato")
+
+            df_combined = st.session_state.combined_data
+
+            # Statistiche
+            st.markdown('<div class="success-box">', unsafe_allow_html=True)
             col1, col2, col3 = st.columns(3)
             with col1:
-                st.metric("📄 File", data.get('Nome_File', 'N/A'))
+                filled_cols = df_combined.notna().sum(axis=1).iloc[0]
+                st.metric("📊 Campi compilati", int(filled_cols))
             with col2:
-                st.metric("📋 Tipo", data.get('Tipo_Documento', 'N/A'))
+                total_cols = len(df_combined.columns)
+                st.metric("📋 Totale colonne", total_cols)
             with col3:
-                st.metric("🕐 Data", data.get('Data_Elaborazione', 'N/A')[:10])
+                percentage = (filled_cols / total_cols * 100) if total_cols > 0 else 0
+                st.metric("✅ Completamento", f"{percentage:.1f}%")
             st.markdown('</div>', unsafe_allow_html=True)
-            
-            # Tabella dati
-            df_single = pd.DataFrame([data])
-            st.dataframe(df_single, use_container_width=True)
-            
-            # Download singolo
-            st.markdown("#### 💾 Download")
+
+            # Mostra alcune colonne chiave
+            st.markdown("##### Anteprima Dati Principali")
+            key_columns = ['Ragionesociale', 'Codfisc Azienda', 'Partita Iva Azienda',
+                          'Nome 1', 'Cognome 1', 'Codfisc 1', 'Comune Sede']
+            available_cols = [col for col in key_columns if col in df_combined.columns]
+            if available_cols:
+                st.dataframe(df_combined[available_cols], use_container_width=True)
+
+            # Mostra tutti i dati
+            with st.expander("🔍 Visualizza Tutti i Campi"):
+                st.dataframe(df_combined, use_container_width=True)
+
+            # Download
+            st.markdown("#### 💾 Download Formato Template")
             col1, col2 = st.columns(2)
-            
+
             with col1:
                 if export_format in ["Excel (.xlsx)", "Entrambi"]:
-                    st.markdown(create_download_link(df_single, "dati_estratti", "excel"), unsafe_allow_html=True)
-            
+                    st.markdown(create_download_link(df_combined, "dati_formato_import", "excel"), unsafe_allow_html=True)
+
             with col2:
                 if export_format in ["CSV (.csv)", "Entrambi"]:
-                    st.markdown(create_download_link(df_single, "dati_estratti", "csv"), unsafe_allow_html=True)
+                    st.markdown(create_download_link(df_combined, "dati_formato_import", "csv"), unsafe_allow_html=True)
+
+            st.markdown("---")
+
+        # Visualizza dati singolo documento (visura o documento separato)
+        if 'visura_data' in st.session_state or 'documento_data' in st.session_state:
+            st.markdown("#### Dati Estratti Individuali")
+
+            if 'visura_data' in st.session_state:
+                with st.expander("📄 Visura Camerale"):
+                    df_visura = pd.DataFrame([st.session_state.visura_data])
+                    st.dataframe(df_visura, use_container_width=True)
+
+            if 'documento_data' in st.session_state:
+                with st.expander("🆔 Documento d'Identità"):
+                    df_doc = pd.DataFrame([st.session_state.documento_data])
+                    st.dataframe(df_doc, use_container_width=True)
         
         # Visualizza dati batch
         if 'batch_data' in st.session_state and st.session_state.batch_data:
