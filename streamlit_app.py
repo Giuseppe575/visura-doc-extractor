@@ -117,46 +117,261 @@ class DocumentExtractor:
         """Analizza il testo della visura camerale ed estrae i dati"""
         data = {}
 
-        patterns = {
-            'Denominazione': r"(?:Denominazione|Ragione sociale)[:\s]*\n?\s*([A-Z][^\n]+)",
-            'Partita_IVA': r"(?:P\.?\s*IVA|Partita\s+IVA)[:\s]*\n?\s*(\d{11})",
-            'Codice_Fiscale': r"(?:Codice\s+Fiscale|C\.?\s*F\.?)[:\s]*\n?\s*([A-Z0-9]{11,16})",
-            'Numero_REA': r"(?:REA|N\.?\s*REA|Numero\s+REA)[:\s]*\n?\s*([A-Z]{2}[\s\-]?\d+)",
-            'Forma_Giuridica': r"(?:Forma\s+giuridica|Natura\s+giuridica)[:\s]*\n?\s*([^\n]+)",
-            'Sede_Legale': r"(?:Sede\s+legale|Indirizzo)[:\s]*\n?\s*([^\n]+?)(?:\s*\d{5}|\n)",
-            'CAP': r"(?:^|\s|-)(\d{5})(?:\s+[A-Z]|\s*-|\s*\()",
-            # Pattern migliorato per Comune: cattura solo 1-3 parole dopo il CAP, prima della provincia
-            'Comune': r"\d{5}\s*[-,]?\s*([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,2})(?:\s*\(|\s*[-,]?\s*\(?[A-Z]{2}\)?)",
-            'Provincia': r"(?:Provincia|Prov\.?|Sigla)[:\s]*\(?\s*([A-Z]{2})\s*\)?|(?:^|\s)\(([A-Z]{2})\)",
-            'Data_Costituzione': r"(?:Data\s+costituzione|Costituita\s+il|Data\s+iscrizione)[:\s]*\n?\s*(\d{1,2}[/\.\-]\d{1,2}[/\.\-]\d{4})",
-            'Capitale_Sociale': r"(?:Capitale\s+sociale|Capitale)[:\s]*\n?\s*(?:€|EUR|Euro)?\s*([\d\.,]+)",
-            'Stato_Attivita': r"(?:Stato)[:\s]*\n?\s*(ATTIVA|ATTIVO|CESSATA|CESSATO|SOSPESA|SOSPESO)"
-        }
+        # DENOMINAZIONE / RAGIONE SOCIALE (multipli pattern)
+        denominazione_patterns = [
+            r"(?:Denominazione|DENOMINAZIONE)[:\s]*\n?\s*([A-Z][A-Z\s'\.]+(?:S\.R\.L\.|SRL|S\.P\.A\.|SPA|S\.A\.S\.|SAS|SRLS|S\.R\.L\.S\.|SOCIETA'[^\n]+)?)",
+            r"(?:Ragione\s+sociale|RAGIONE\s+SOCIALE)[:\s]*\n?\s*([A-Z][^\n]+)",
+            r"^([A-Z][A-Z\s'\.]+(?:S\.R\.L\.|SRL|S\.P\.A\.|SOCIETA')[^\n]{0,100})",  # All'inizio del testo
+            r"VISURA.*?\n+([A-Z][A-Z\s'\.]+(?:SOCIETA|S\.R\.L\.|SRL)[^\n]+)",
+        ]
+        for pattern in denominazione_patterns:
+            match = re.search(pattern, text, re.MULTILINE | re.IGNORECASE)
+            if match and not data.get('Denominazione'):
+                denominazione = match.group(1).strip()
+                # Pulisci eventuali artefatti
+                denominazione = re.sub(r'\s+', ' ', denominazione)
+                # Rimuovi caratteri speciali finali
+                denominazione = re.sub(r'[,\.\-]+$', '', denominazione)
+                if len(denominazione) > 3:
+                    data['Denominazione'] = denominazione
+                    break
 
-        for key, pattern in patterns.items():
-            value = self.extract_pattern(text, pattern)
-            if value:
-                # Pulizia del valore estratto
-                cleaned_value = value.strip()
-                # Rimuovi spazi multipli
-                cleaned_value = re.sub(r'\s+', ' ', cleaned_value)
+        # PARTITA IVA (multipli pattern)
+        piva_patterns = [
+            r"(?:Partita\s+IVA|P\.?\s*IVA|PARTITA\s+IVA)[:\s]*\n?\s*(\d{11})",
+            r"(?:P\.IVA|PIVA)[:\s]+(\d{11})",
+            r"IVA[:\s]*(\d{11})",
+        ]
+        for pattern in piva_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match and not data.get('Partita_IVA'):
+                data['Partita_IVA'] = match.group(1)
+                break
 
-                # Pulizia specifica per il Comune
-                if key == 'Comune':
-                    cleaned_value = re.sub(r'[,\-\s]+$', '', cleaned_value)
-                    # Salta valori non validi per un comune
-                    invalid_words = ['NUMERO', 'REPERTORIO', 'ECONOMICO', 'REA', 'AMMINISTRATIVO', 'ATTIVITA']
-                    if any(word in cleaned_value.upper() for word in invalid_words):
-                        continue  # Salta questo valore, non è valido
+        # CODICE FISCALE (multipli pattern)
+        cf_patterns = [
+            r"(?:Codice\s+[Ff]iscale|C\.?\s*F\.?|CF)[:\s]*\n?\s*([A-Z0-9]{11,16})",
+            r"(?:Codice\s+fiscale\s+e\s+n\.?\s*iscr)[^\n]*[:\s]*(\d{11})",
+            r"(\d{11})(?:\s|$)",  # 11 cifre da sole
+        ]
+        for pattern in cf_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match and not data.get('Codice_Fiscale'):
+                cf = match.group(1)
+                # Verifica che sia lungo 11 o 16 caratteri
+                if len(cf) in [11, 16]:
+                    data['Codice_Fiscale'] = cf
+                    break
 
-                data[key] = cleaned_value
+        # NUMERO REA (multipli pattern)
+        rea_patterns = [
+            r"(?:Numero\s+REA|N\.?\s*REA|REA)[:\s]*\n?\s*([A-Z]{2})[\s\-]*(\d+)",
+            r"REA[:\s]*([A-Z]{2})\s*-\s*(\d+)",
+            r"(?:Repertorio\s+[Ee]conomico)[^\n]*[:\s]*([A-Z]{2})\s*[\-\s]*(\d+)",
+        ]
+        for pattern in rea_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match and not data.get('Numero_REA'):
+                if len(match.groups()) == 2:
+                    data['Numero_REA'] = f"{match.group(1)} - {match.group(2)}"
+                else:
+                    data['Numero_REA'] = match.group(1)
+                break
 
-        # Fallback per Comune: cerca pattern alternativi se non trovato
-        if 'Comune' not in data or not data.get('Comune'):
-            # Prova pattern alternativo: "Comune:" seguito dal nome
-            alt_match = re.search(r"Comune[:\s]+([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,2})(?:\s*\n|\s*$)", text, re.IGNORECASE | re.MULTILINE)
-            if alt_match:
-                data['Comune'] = alt_match.group(1).strip()
+        # FORMA GIURIDICA (multipli pattern)
+        forma_patterns = [
+            r"(?:Forma\s+giuridica|Natura\s+giuridica)[:\s]*\n?\s*([a-z\s']+(?:limitata|semplificata|per azioni|società|s\.r\.l\.|s\.p\.a\.)[^\n]*)",
+            r"(?:FORMA\s+GIURIDICA)[:\s]*\n?\s*([^\n]+)",
+            r"(società\s+a\s+responsabilità\s+limitata[^\n]*)",
+            r"(SOCIETA'?\s+A\s+RESPONSABILITA'?\s+LIMITATA[^\n]*)",
+        ]
+        for pattern in forma_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match and not data.get('Forma_Giuridica'):
+                forma = match.group(1).strip()
+                forma = re.sub(r'\s+', ' ', forma)
+                if len(forma) > 3:
+                    data['Forma_Giuridica'] = forma
+                    break
+
+        # SEDE LEGALE con indirizzo completo
+        sede_patterns = [
+            r"(?:Sede\s+legale|Indirizzo\s+[Ss]ede)[:\s]*\n?\s*([A-Z][^\n]+?)(?:CAP\s*\d{5}|\n|$)",
+            r"(?:Indirizzo)[:\s]*([^\n]+?)(?:\d{5})",
+            r"(?:VIA|VIALE|PIAZZA|CORSO)\s+([A-Z][^\n]+?)(?:\s+\d{5})",
+        ]
+        for pattern in sede_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match and not data.get('Sede_Legale'):
+                sede = match.group(1).strip()
+                # Pulisci
+                sede = re.sub(r'\s+', ' ', sede)
+                sede = re.sub(r'CAP.*$', '', sede)
+                if len(sede) > 5:
+                    data['Sede_Legale'] = sede
+                    break
+
+        # CAP
+        cap_patterns = [
+            r"(?:CAP|Cap)[:\s]*(\d{5})",
+            r"(?:^|\s)(\d{5})(?:\s+[A-Z][A-Za-z]+\s*\([A-Z]{2}\))",
+        ]
+        for pattern in cap_patterns:
+            match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
+            if match and not data.get('CAP'):
+                data['CAP'] = match.group(1)
+                break
+
+        # COMUNE (multipli pattern)
+        comune_patterns = [
+            r"\d{5}\s*[-,]?\s*([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,2})(?:\s*\(|\s*[-,]?\s*\(?[A-Z]{2}\)?)",
+            r"(?:Comune)[:\s]+([A-Z][A-Za-z\s]+?)(?:\s*\([A-Z]{2}\)|\n|$)",
+            r"([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,2})\s*\([A-Z]{2}\)",
+        ]
+        for pattern in comune_patterns:
+            match = re.search(pattern, text, re.MULTILINE)
+            if match and not data.get('Comune'):
+                comune = match.group(1).strip()
+                # Valida che non contenga parole non valide
+                invalid = ['NUMERO', 'REPERTORIO', 'REA', 'AMMINISTRATIVO', 'ATTIVITA', 'REGISTRO']
+                if not any(word in comune.upper() for word in invalid) and len(comune) > 2:
+                    data['Comune'] = comune
+                    break
+
+        # PROVINCIA
+        prov_patterns = [
+            r"\(([A-Z]{2})\)",
+            r"(?:Provincia|Prov\.?)[:\s]*\(?\s*([A-Z]{2})\s*\)?",
+            r"(?:Sigla)[:\s]*([A-Z]{2})",
+        ]
+        for pattern in prov_patterns:
+            match = re.search(pattern, text)
+            if match and not data.get('Provincia'):
+                data['Provincia'] = match.group(1)
+                break
+
+        # DATA COSTITUZIONE / ISCRIZIONE
+        data_cost_patterns = [
+            r"(?:Data\s+atto\s+di\s+costituzione|Data\s+costituzione)[:\s]*\n?\s*(\d{1,2}[/\.\-]\d{1,2}[/\.\-]\d{4})",
+            r"(?:Data\s+iscrizione|Data\s+di\s+iscrizione)[:\s]*\n?\s*(\d{1,2}[/\.\-]\d{1,2}[/\.\-]\d{4})",
+            r"(?:Costituita\s+il)[:\s]*(\d{1,2}[/\.\-]\d{1,2}[/\.\-]\d{4})",
+        ]
+        for pattern in data_cost_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match and not data.get('Data_Costituzione'):
+                data['Data_Costituzione'] = match.group(1)
+                break
+
+        # DATA INIZIO ATTIVITÀ
+        data_inizio_patterns = [
+            r"(?:Data\s+inizio\s+attività|Data\s+inizio\s+attivit[aà])[:\s]*\n?\s*(\d{1,2}[/\.\-]\d{1,2}[/\.\-]\d{4})",
+            r"(?:Inizio\s+attività)[:\s]*(\d{1,2}[/\.\-]\d{1,2}[/\.\-]\d{4})",
+        ]
+        for pattern in data_inizio_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match and not data.get('Data_Inizio_Attivita'):
+                data['Data_Inizio_Attivita'] = match.group(1)
+                break
+
+        # CAPITALE SOCIALE
+        capitale_patterns = [
+            r"(?:Capitale\s+sociale)[:\s]*\n?\s*(?:€|EUR|Euro)?\s*([\d\.,]+)",
+            r"(?:Capitale)[:\s]+(?:€|EUR)?\s*([\d\.,]+)",
+            r"(?:sottoscritto|versato)[:\s]*(?:€)?\s*([\d\.,]+)",
+        ]
+        for pattern in capitale_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match and not data.get('Capitale_Sociale'):
+                data['Capitale_Sociale'] = match.group(1)
+                break
+
+        # STATO ATTIVITÀ
+        stato_patterns = [
+            r"(?:Stato\s+attività|Stato)[:\s]*\n?\s*(ATTIVA|ATTIVO|CESSATA|CESSATO|SOSPESA|SOSPESO)",
+            r"(?:stato)[:\s]+(attiva|cessata|sospesa)",
+        ]
+        for pattern in stato_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match and not data.get('Stato_Attivita'):
+                data['Stato_Attivita'] = match.group(1).upper()
+                break
+
+        # CODICE ATECO (IMPORTANTE!)
+        ateco_patterns = [
+            r"(?:Codice\s+ATECO|ATECO|Cod\.\s*ATECO)[:\s]*\n?\s*(\d{2}\.\d{2}\.\d{1,2})",
+            r"(?:Attività\s+prevalente).*?(\d{2}\.\d{2}\.\d{1,2})",
+            r"ATECO[:\s]+(\d{2}\.\d{2}\.\d{1,2})",
+            r"(\d{2}\.\d{2}\.\d{1,2})",  # Pattern generico per codici
+        ]
+        for pattern in ateco_patterns:
+            match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+            if match and not data.get('Codice_ATECO'):
+                ateco = match.group(1)
+                # Verifica che sia un formato valido (XX.XX.X o XX.XX.XX)
+                if re.match(r'\d{2}\.\d{2}\.\d{1,2}', ateco):
+                    data['Codice_ATECO'] = ateco
+                    break
+
+        # ATTIVITÀ PREVALENTE (descrizione)
+        attivita_patterns = [
+            r"(?:Attività\s+prevalente)[:\s]*\n?\s*([a-z][a-z\s,]+(?:prodotti|servizi|commercio|produzione|vendita|gestione)[^\n]{0,150})",
+            r"(?:ATTIVITA'?\s+PREVALENTE)[:\s]*([^\n]+)",
+            r"(?:Oggetto\s+sociale)[:\s]*([A-Z][^\n]{20,200})",
+        ]
+        for pattern in attivita_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match and not data.get('Attivita_Prevalente'):
+                attivita = match.group(1).strip()
+                attivita = re.sub(r'\s+', ' ', attivita)
+                if len(attivita) > 10:
+                    data['Attivita_Prevalente'] = attivita[:200]  # Max 200 caratteri
+                    break
+
+        # AMMINISTRATORE / LEGALE RAPPRESENTANTE (NUOVO!)
+        amministratore_patterns = [
+            r"(?:Amministratore\s+[Uu]nico|AMMINISTRATORE\s+UNICO)[:\s]*\n?\s*([A-Z][A-Z\s]+)",
+            r"(?:Legale\s+[Rr]appresentante|LEGALE\s+RAPPRESENTANTE)[:\s]*\n?\s*([A-Z][A-Z\s]+)",
+            r"(?:Rappresentante\s+dell'?impresa)[:\s]*\n?\s*([A-Z][A-Z\s]+)",
+            r"(?:Presidente)[:\s]*\n?\s*([A-Z][A-Z\s]+)",
+        ]
+        for pattern in amministratore_patterns:
+            match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
+            if match and not data.get('Amministratore'):
+                amm = match.group(1).strip()
+                # Pulisci da caratteri extra
+                amm = re.sub(r'\s+', ' ', amm)
+                # Estrai nome e cognome se possibile
+                parts = amm.split()
+                if len(parts) >= 2:
+                    data['Amministratore'] = amm
+                    data['Amministratore_Cognome'] = parts[0]
+                    data['Amministratore_Nome'] = ' '.join(parts[1:])
+                else:
+                    data['Amministratore'] = amm
+                break
+
+        # SOCI / TITOLARI (NUOVO!)
+        # Cerca pattern tipo "Soci e titolari: 1" o simili
+        soci_numero_patterns = [
+            r"(?:Soci\s+e\s+titolari)[^\n]*[:\s]+(\d+)",
+            r"(?:Numero\s+soci)[:\s]+(\d+)",
+        ]
+        for pattern in soci_numero_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match and not data.get('Numero_Soci'):
+                data['Numero_Soci'] = match.group(1)
+                break
+
+        # Cerca nomi dei soci (più complesso)
+        # Pattern per sezioni soci
+        soci_section_pattern = r"(?:Soci\s+e\s+titolari|SOCI|Elenco\s+soci)(.*?)(?:\n\n|\Z)"
+        match = re.search(soci_section_pattern, text, re.IGNORECASE | re.DOTALL)
+        if match:
+            soci_text = match.group(1)
+            # Cerca nomi (pattern approssimativo)
+            soci_names = re.findall(r"([A-Z][A-Z]+)\s+([A-Z][a-z]+)", soci_text)
+            if soci_names:
+                data['Soci'] = '; '.join([f"{cognome} {nome}" for cognome, nome in soci_names[:5]])  # Max 5 soci
 
         return data
     
@@ -410,6 +625,8 @@ def map_data_to_template(visura_data, documento_data):
         row['Codfisc Azienda'] = visura_data.get('Codice_Fiscale', '')
         row['Partita Iva Azienda'] = visura_data.get('Partita_IVA', '')
         row['Cciaa'] = visura_data.get('Numero_REA', '')
+        row['Cod Ateco'] = visura_data.get('Codice_ATECO', '')  # AGGIUNTO
+        row['Attivita'] = visura_data.get('Attivita_Prevalente', '')  # AGGIUNTO
         row['Indirizzo Sede'] = visura_data.get('Sede_Legale', '')
         row['Comune Sede'] = visura_data.get('Comune', '')
         row['Cap Sede'] = visura_data.get('CAP', '')
@@ -455,6 +672,14 @@ def map_data_to_template(visura_data, documento_data):
         row['Tit 1 Numdoc'] = documento_data.get('Numero_Documento', '')
         row['Tit 1 Rilasc Da'] = documento_data.get('Comune_Rilascio', '')
         row['Tit 1 Scad Doc'] = documento_data.get('Data_Scadenza', '')
+
+    # Se non c'è documento ma c'è amministratore dalla visura, usa quei dati
+    elif visura_data and (visura_data.get('Amministratore_Nome') or visura_data.get('Amministratore_Cognome')):
+        row['Carica 1'] = 'AMMINISTRATORE UNICO'
+        row['Nome 1'] = visura_data.get('Amministratore_Nome', '')
+        row['Cognome 1'] = visura_data.get('Amministratore_Cognome', '')
+        row['Tit 1 Nome'] = visura_data.get('Amministratore_Nome', '')
+        row['Tit 1 Cognome'] = visura_data.get('Amministratore_Cognome', '')
 
     return pd.DataFrame([row])
 
