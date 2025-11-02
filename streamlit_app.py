@@ -150,20 +150,11 @@ class DocumentExtractor:
                 data['Partita_IVA'] = match.group(1)
                 break
 
-        # CODICE FISCALE (multipli pattern)
-        cf_patterns = [
-            r"(?:Codice\s+[Ff]iscale|C\.?\s*F\.?|CF)[:\s]*\n?\s*([A-Z0-9]{11,16})",
-            r"(?:Codice\s+fiscale\s+e\s+n\.?\s*iscr)[^\n]*[:\s]*(\d{11})",
-            r"(\d{11})(?:\s|$)",  # 11 cifre da sole
-        ]
-        for pattern in cf_patterns:
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match and not data.get('Codice_Fiscale'):
-                cf = match.group(1)
-                # Verifica che sia lungo 11 o 16 caratteri
-                if len(cf) in [11, 16]:
-                    data['Codice_Fiscale'] = cf
-                    break
+        # CODICE FISCALE (pattern semplificato come visura_extractor.py)
+        cf_pattern = r"Codice fiscale[:\s]+(?:e[^\n]*)?[:\s]*(\d{11})"
+        match = re.search(cf_pattern, text, re.IGNORECASE)
+        if match:
+            data['Codice_Fiscale'] = match.group(1)
 
         # NUMERO REA (multipli pattern)
         rea_patterns = [
@@ -196,64 +187,74 @@ class DocumentExtractor:
                     data['Forma_Giuridica'] = forma
                     break
 
-        # SEDE LEGALE con indirizzo completo
-        sede_patterns = [
-            r"(?:Sede legale|Indirizzo Sede(?:\s+legale)?)[:\s]*\n?\s*([A-Z][A-Z\s']+?)\s*\(([A-Z]{2})\)\s*(?:VIA|PIAZZA|CORSO|VIALE)([^\n]+?)(?:CAP\s*)?(\d{5})",
-            r"(?:Sede\s+legale|Indirizzo\s+[Ss]ede)[:\s]*\n?\s*([A-Z][^\n]+?)(?:CAP\s*\d{5}|\n|$)",
-            r"(?:Indirizzo)[:\s]*([^\n]+?)(?:\d{5})",
-            r"(?:VIA|VIALE|PIAZZA|CORSO)\s+([A-Z][^\n]+?)(?:\s+\d{5})",
-        ]
-        for pattern in sede_patterns:
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match and not data.get('Sede_Legale'):
-                sede = match.group(1).strip()
-                # Pulisci
-                sede = re.sub(r'\s+', ' ', sede)
-                sede = re.sub(r'CAP.*$', '', sede)
-                # Rimuovi eventuali "legale" finali
-                sede = re.sub(r'\blegale\b\s*$', '', sede, flags=re.IGNORECASE)
-                if len(sede) > 5:
-                    data['Sede_Legale'] = sede
+        # SEDE LEGALE con indirizzo completo (pattern unificato come visura_extractor.py)
+        # Questo pattern cattura tutto insieme: Comune, Provincia, Indirizzo, CAP
+        sede_pattern = r"(?:Sede legale|Indirizzo Sede(?:\s+legale)?)[:\s]+([A-Z][A-Z\s']+?)\s*\(([A-Z]{2})\)\s*(?:VIA|PIAZZA|CORSO|VIALE)([^\n]+?)(?:CAP\s*)?(\d{5})"
+        match = re.search(sede_pattern, text, re.IGNORECASE)
+        if match:
+            data['Comune'] = match.group(1).strip()
+            data['Provincia'] = match.group(2)
+            indirizzo = match.group(3).strip()
+            # Rimuovi CAP dall'indirizzo se presente
+            indirizzo = re.sub(r'\s*CAP.*$', '', indirizzo)
+            data['Sede_Legale'] = indirizzo
+            data['CAP'] = match.group(4)
+
+        # Pattern di fallback per sede senza formato standard
+        if not data.get('Sede_Legale'):
+            sede_patterns_fallback = [
+                r"(?:Sede\s+legale|Indirizzo\s+[Ss]ede)[:\s]*\n?\s*([A-Z][^\n]+?)(?:CAP\s*\d{5}|\n|$)",
+                r"(?:Indirizzo)[:\s]*([^\n]+?)(?:\d{5})",
+            ]
+            for pattern in sede_patterns_fallback:
+                match = re.search(pattern, text, re.IGNORECASE)
+                if match:
+                    sede = match.group(1).strip()
+                    sede = re.sub(r'\s+', ' ', sede)
+                    sede = re.sub(r'CAP.*$', '', sede)
+                    if len(sede) > 5:
+                        data['Sede_Legale'] = sede
+                        break
+
+        # CAP fallback (se non già estratto dalla sede)
+        if not data.get('CAP'):
+            cap_patterns = [
+                r"(?:CAP|Cap)[:\s]*(\d{5})",
+                r"(?:^|\s)(\d{5})(?:\s+[A-Z][A-Za-z]+\s*\([A-Z]{2}\))",
+            ]
+            for pattern in cap_patterns:
+                match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
+                if match:
+                    data['CAP'] = match.group(1)
                     break
 
-        # CAP
-        cap_patterns = [
-            r"(?:CAP|Cap)[:\s]*(\d{5})",
-            r"(?:^|\s)(\d{5})(?:\s+[A-Z][A-Za-z]+\s*\([A-Z]{2}\))",
-        ]
-        for pattern in cap_patterns:
-            match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
-            if match and not data.get('CAP'):
-                data['CAP'] = match.group(1)
-                break
+        # COMUNE fallback (se non già estratto dalla sede)
+        if not data.get('Comune'):
+            comune_patterns = [
+                r"(?:Comune)[:\s]+([A-Z][A-Za-z\s]+?)(?:\s*\([A-Z]{2}\)|\n|$)",
+                r"\d{5}\s*[-,]?\s*([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,2})(?:\s*\([A-Z]{2}\))",
+            ]
+            for pattern in comune_patterns:
+                match = re.search(pattern, text, re.MULTILINE)
+                if match:
+                    comune = match.group(1).strip()
+                    # Valida che non contenga parole non valide
+                    invalid = ['NUMERO', 'REPERTORIO', 'REA', 'AMMINISTRATIVO', 'ATTIVITA', 'REGISTRO', 'PARTITA', 'IVA', 'CODICE', 'FISCALE']
+                    if not any(word in comune.upper() for word in invalid) and len(comune) > 2:
+                        data['Comune'] = comune
+                        break
 
-        # COMUNE (multipli pattern)
-        comune_patterns = [
-            r"\d{5}\s*[-,]?\s*([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,2})(?:\s*\(|\s*[-,]?\s*\(?[A-Z]{2}\)?)",
-            r"(?:Comune)[:\s]+([A-Z][A-Za-z\s]+?)(?:\s*\([A-Z]{2}\)|\n|$)",
-            r"([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,2})\s*\([A-Z]{2}\)",
-        ]
-        for pattern in comune_patterns:
-            match = re.search(pattern, text, re.MULTILINE)
-            if match and not data.get('Comune'):
-                comune = match.group(1).strip()
-                # Valida che non contenga parole non valide
-                invalid = ['NUMERO', 'REPERTORIO', 'REA', 'AMMINISTRATIVO', 'ATTIVITA', 'REGISTRO']
-                if not any(word in comune.upper() for word in invalid) and len(comune) > 2:
-                    data['Comune'] = comune
+        # PROVINCIA fallback (se non già estratta dalla sede)
+        if not data.get('Provincia'):
+            prov_patterns = [
+                r"\(([A-Z]{2})\)",
+                r"(?:Provincia|Prov\.?)[:\s]*\(?\s*([A-Z]{2})\s*\)?",
+            ]
+            for pattern in prov_patterns:
+                match = re.search(pattern, text)
+                if match:
+                    data['Provincia'] = match.group(1)
                     break
-
-        # PROVINCIA
-        prov_patterns = [
-            r"\(([A-Z]{2})\)",
-            r"(?:Provincia|Prov\.?)[:\s]*\(?\s*([A-Z]{2})\s*\)?",
-            r"(?:Sigla)[:\s]*([A-Z]{2})",
-        ]
-        for pattern in prov_patterns:
-            match = re.search(pattern, text)
-            if match and not data.get('Provincia'):
-                data['Provincia'] = match.group(1)
-                break
 
         # DATA COSTITUZIONE / ISCRIZIONE
         data_cost_patterns = [
