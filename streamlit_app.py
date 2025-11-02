@@ -333,48 +333,82 @@ class DocumentExtractor:
                     data['Attivita_Prevalente'] = attivita[:200]  # Max 200 caratteri
                     break
 
-        # AMMINISTRATORE / LEGALE RAPPRESENTANTE (NUOVO!)
-        amministratore_patterns = [
-            r"(?:Amministratore\s+[Uu]nico|AMMINISTRATORE\s+UNICO)[:\s]*\n?\s*([A-Z]+)\s+([A-Z]+?)(?:\s+(?:Rappresentante|RAPPRESENTANTE|nato|NATO|Codice|CODICE|residente|RESIDENTE)|\s*\n|$)",
-            r"(?:Legale\s+[Rr]appresentante|LEGALE\s+RAPPRESENTANTE)[:\s]*\n?\s*([A-Z]+)\s+([A-Z]+?)(?:\s+(?:nato|NATO|Codice|CODICE|residente|RESIDENTE)|\s*\n|$)",
-            r"(?:Amministratore|AMMINISTRATORE)[:\s]*(?:Unico|UNICO)?[:\s]*([A-Z]+)\s+([A-Z]+?)(?:\s+(?:Rappresentante|RAPPRESENTANTE|nato|NATO|Codice|CODICE|residente|RESIDENTE)|\s*\n|$)",
-            r"(?:Presidente)[:\s]*\n?\s*([A-Z]+)\s+([A-Z]+?)(?:\s+(?:nato|NATO|Codice|CODICE)|\s*\n|$)",
-        ]
-        for pattern in amministratore_patterns:
-            match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
-            if match and not data.get('Amministratore'):
-                # Ottieni cognome e nome dai primi due gruppi
-                cognome = match.group(1).strip()
-                nome = match.group(2).strip() if len(match.groups()) >= 2 else ''
+        # ESTRAZIONE DI TUTTE LE PERSONE (amministratori, soci, titolari) CON DATI PERSONALI
+        # Questo è lo stesso sistema implementato in visura_extractor.py
+        persone = []
 
-                if cognome and nome:
-                    data['Amministratore'] = f"{cognome} {nome}"
-                    data['Amministratore_Cognome'] = cognome
-                    data['Amministratore_Nome'] = nome
-                break
-
-        # SOCI / TITOLARI (NUOVO!)
-        # Cerca pattern tipo "Soci e titolari: 1" o simili
-        soci_numero_patterns = [
-            r"(?:Soci\s+e\s+titolari)[^\n]*[:\s]+(\d+)",
-            r"(?:Numero\s+soci)[:\s]+(\d+)",
-        ]
-        for pattern in soci_numero_patterns:
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match and not data.get('Numero_Soci'):
-                data['Numero_Soci'] = match.group(1)
-                break
-
-        # Cerca nomi dei soci (più complesso)
-        # Pattern per sezioni soci
-        soci_section_pattern = r"(?:Soci\s+e\s+titolari|SOCI|Elenco\s+soci)(.*?)(?:\n\n|\Z)"
-        match = re.search(soci_section_pattern, text, re.IGNORECASE | re.DOTALL)
+        # Pattern amministratore
+        amm_pattern = r"(?:Amministratore|AMMINISTRATORE)[:\s]*(?:Unico|UNICO)?[:\s]*([A-Z]+)\s+([A-Z]+?)(?:\s+(?:Rappresentante|RAPPRESENTANTE|nato|NATO|Codice|CODICE|residente|RESIDENTE)|\s*\n|$)"
+        match = re.search(amm_pattern, text)
         if match:
-            soci_text = match.group(1)
-            # Cerca nomi (pattern approssimativo)
-            soci_names = re.findall(r"([A-Z][A-Z]+)\s+([A-Z][a-z]+)", soci_text)
-            if soci_names:
-                data['Soci'] = '; '.join([f"{cognome} {nome}" for cognome, nome in soci_names[:5]])  # Max 5 soci
+            cognome = match.group(1).strip()
+            nome = match.group(2).strip()
+            persone.append({
+                'carica': 'AMMINISTRATORE',
+                'cognome': cognome,
+                'nome': nome
+            })
+
+        # Pattern per soci
+        soci_pattern = r"(?:Socio|SOCIO)[:\s]*([A-Z]+)\s+([A-Z]+?)(?:\s+(?:nato|NATO|Codice|CODICE|residente|RESIDENTE|quota|QUOTA)|\s*\n|$)"
+        for match in re.finditer(soci_pattern, text):
+            cognome = match.group(1).strip()
+            nome = match.group(2).strip()
+            persone.append({
+                'carica': 'SOCIO',
+                'cognome': cognome,
+                'nome': nome
+            })
+
+        # Per ogni persona, cerca i dati personali nel testo
+        for i, persona in enumerate(persone[:5], start=1):
+            cognome = persona['cognome']
+            nome = persona['nome']
+
+            data[f'Carica {i}'] = persona['carica']
+            data[f'Cognome {i}'] = cognome
+            data[f'Nome {i}'] = nome
+
+            # Cerca SOLO nella sezione dettagliata che contiene Nato, CF e domicilio tutti insieme
+            persona_section_pattern = rf"{cognome}\s+{nome}[^\n]*\n+Nato\s+a.*?domicilio.*?CAP\s+\d{{5}}"
+            persona_match = re.search(persona_section_pattern, text, re.DOTALL | re.IGNORECASE)
+
+            if persona_match:
+                persona_text = persona_match.group(0)
+
+                # Data e luogo di nascita
+                nascita_pattern = r"Nato\s+a\s+([A-Z][A-Za-z\s]+?)\s*\(([A-Z]{2})\)\s+il\s+(\d{2}/\d{2}/\d{4})"
+                nascita_match = re.search(nascita_pattern, persona_text, re.IGNORECASE)
+                if nascita_match:
+                    data[f'Comune Nas {i}'] = nascita_match.group(1).strip()
+                    data[f'Provincia Nas {i}'] = nascita_match.group(2)
+                    data[f'Data Nas {i}'] = nascita_match.group(3)
+                    data[f'Stato Nas {i}'] = 'ITALIA'
+
+                # Codice fiscale
+                cf_persona_pattern = r"Codice fiscale[:\s]+([A-Z]{6}\d{2}[A-Z]\d{2}[A-Z]\d{3}[A-Z])"
+                cf_persona_match = re.search(cf_persona_pattern, persona_text, re.IGNORECASE)
+                if cf_persona_match:
+                    cf = cf_persona_match.group(1)
+                    data[f'Codfisc {i}'] = cf
+
+                    # Estrai sesso dal CF (9° carattere: <40=M, >=40=F)
+                    try:
+                        giorno_sesso = int(cf[9:11])
+                        data[f'Sesso {i}'] = 'M' if giorno_sesso < 40 else 'F'
+                    except:
+                        pass
+
+                # Domicilio/Residenza
+                domicilio_pattern = r"domicilio\s+([A-Z][A-Za-z\s]+?)\s*\(([A-Z]{2})\)\s+(VIA|PIAZZA|CORSO|VIALE)\s+([^\n]+?)\s+CAP\s+(\d{5})"
+                domicilio_match = re.search(domicilio_pattern, persona_text, re.IGNORECASE)
+                if domicilio_match:
+                    data[f'Comune Res {i}'] = domicilio_match.group(1).strip()
+                    data[f'Prov Res {i}'] = domicilio_match.group(2)
+                    indirizzo_res = domicilio_match.group(4).strip()
+                    data[f'Indirizzo Res {i}'] = indirizzo_res
+                    data[f'Cap Res {i}'] = domicilio_match.group(5)
+                    data[f'Stato Res {i}'] = 'ITALIA'
 
         return data
     
@@ -641,21 +675,65 @@ def map_data_to_template(visura_data, documento_data):
         row['Data Ident'] = datetime.now().strftime('%Y-%m-%d')
         row['Pep'] = 'NO'
 
-    # Mappa dati del documento
+    # Mappa dati delle persone (fino a 5 persone)
+    # PRIORITA': Usa i dati dalla visura se disponibili (estrazione completa),
+    # altrimenti usa i dati dal documento d'identità
+
+    # Estrai dati persone dalla visura (già estratti con il nuovo sistema)
+    if visura_data:
+        for i in range(1, 6):  # Fino a 5 persone
+            carica_key = f'Carica {i}'
+            if carica_key in visura_data:
+                # Mappa tutti i dati personali dalla visura
+                row[f'Carica {i}'] = visura_data.get(f'Carica {i}', '')
+                row[f'Nome {i}'] = visura_data.get(f'Nome {i}', '')
+                row[f'Cognome {i}'] = visura_data.get(f'Cognome {i}', '')
+                row[f'Sesso {i}'] = visura_data.get(f'Sesso {i}', '')
+                row[f'Data Nas {i}'] = visura_data.get(f'Data Nas {i}', '')
+                row[f'Comune Nas {i}'] = visura_data.get(f'Comune Nas {i}', '')
+                row[f'Provincia Nas {i}'] = visura_data.get(f'Provincia Nas {i}', '')
+                row[f'Stato Nas {i}'] = visura_data.get(f'Stato Nas {i}', '')
+                row[f'Codfisc {i}'] = visura_data.get(f'Codfisc {i}', '')
+                row[f'Indirizzo Res {i}'] = visura_data.get(f'Indirizzo Res {i}', '')
+                row[f'Comune Res {i}'] = visura_data.get(f'Comune Res {i}', '')
+                row[f'Cap Res {i}'] = visura_data.get(f'Cap Res {i}', '')
+                row[f'Prov Res {i}'] = visura_data.get(f'Prov Res {i}', '')
+                row[f'Stato Res {i}'] = visura_data.get(f'Stato Res {i}', '')
+
+    # Se c'è un documento d'identità, usa quei dati per Persona 1
+    # (sovrascrive o integra i dati dalla visura)
     if documento_data:
-        row['Carica 1'] = 'TITOLARE' if visura_data else 'RAPPRESENTANTE LEGALE'
-        row['Nome 1'] = documento_data.get('Nome', '')
-        row['Cognome 1'] = documento_data.get('Cognome', '')
-        row['Sesso 1'] = documento_data.get('Sesso', '')
-        row['Data Nas 1'] = documento_data.get('Data_Nascita', '')
-        row['Comune Nas 1'] = documento_data.get('Luogo_Nascita', '')
-        row['Provincia Nas 1'] = documento_data.get('Provincia_Nascita', '')
-        row['Stato Nas 1'] = 'ITALIA'
-        row['Codfisc 1'] = documento_data.get('CF_Persona', '')
-        row['Indirizzo Res 1'] = documento_data.get('Residenza', '')
-        row['Comune Res 1'] = documento_data.get('Comune_Residenza', '')
-        row['Prov Res 1'] = documento_data.get('Provincia_Nascita', '')
-        row['Stato Res 1'] = 'ITALIA'
+        # Se non c'è già una carica dalla visura, imposta come TITOLARE/RAPPRESENTANTE
+        if not row.get('Carica 1'):
+            row['Carica 1'] = 'TITOLARE' if visura_data else 'RAPPRESENTANTE LEGALE'
+
+        # Mappa dati documento per Persona 1 (integra o sovrascrive)
+        if not row.get('Nome 1'):
+            row['Nome 1'] = documento_data.get('Nome', '')
+        if not row.get('Cognome 1'):
+            row['Cognome 1'] = documento_data.get('Cognome', '')
+        if not row.get('Sesso 1'):
+            row['Sesso 1'] = documento_data.get('Sesso', '')
+        if not row.get('Data Nas 1'):
+            row['Data Nas 1'] = documento_data.get('Data_Nascita', '')
+        if not row.get('Comune Nas 1'):
+            row['Comune Nas 1'] = documento_data.get('Luogo_Nascita', '')
+        if not row.get('Provincia Nas 1'):
+            row['Provincia Nas 1'] = documento_data.get('Provincia_Nascita', '')
+        if not row.get('Stato Nas 1'):
+            row['Stato Nas 1'] = 'ITALIA'
+        if not row.get('Codfisc 1'):
+            row['Codfisc 1'] = documento_data.get('CF_Persona', '')
+        if not row.get('Indirizzo Res 1'):
+            row['Indirizzo Res 1'] = documento_data.get('Residenza', '')
+        if not row.get('Comune Res 1'):
+            row['Comune Res 1'] = documento_data.get('Comune_Residenza', '')
+        if not row.get('Prov Res 1'):
+            row['Prov Res 1'] = documento_data.get('Provincia_Nascita', '')
+        if not row.get('Stato Res 1'):
+            row['Stato Res 1'] = 'ITALIA'
+
+        # Dati specifici del documento (sempre dal documento)
         row['Tipo Doc'] = documento_data.get('Tipo_Documento', '')
         row['Num Doc'] = documento_data.get('Numero_Documento', '')
         row['Data Doc'] = documento_data.get('Data_Rilascio', '')
@@ -663,26 +741,18 @@ def map_data_to_template(visura_data, documento_data):
         row['Autorita Doc'] = documento_data.get('Comune_Rilascio', '')
 
         # Copia dati anche come Titolare 1
-        row['Tit 1 Nome'] = documento_data.get('Nome', '')
-        row['Tit 1 Cognome'] = documento_data.get('Cognome', '')
-        row['Tit 1 Codfisc'] = documento_data.get('CF_Persona', '')
-        row['Tit 1 Sesso'] = documento_data.get('Sesso', '')
-        row['Tit 1 Datanas'] = documento_data.get('Data_Nascita', '')
-        row['Tit 1 Comunenas'] = documento_data.get('Luogo_Nascita', '')
-        row['Tit 1 Provincia Nas'] = documento_data.get('Provincia_Nascita', '')
-        row['Tit 1 Stato Nas'] = 'ITALIA'
-        row['Tit 1 Tipodoc'] = documento_data.get('Tipo_Documento', '')
-        row['Tit 1 Numdoc'] = documento_data.get('Numero_Documento', '')
-        row['Tit 1 Rilasc Da'] = documento_data.get('Comune_Rilascio', '')
-        row['Tit 1 Scad Doc'] = documento_data.get('Data_Scadenza', '')
-
-    # Se non c'è documento ma c'è amministratore dalla visura, usa quei dati
-    elif visura_data and (visura_data.get('Amministratore_Nome') or visura_data.get('Amministratore_Cognome')):
-        row['Carica 1'] = 'AMMINISTRATORE UNICO'
-        row['Nome 1'] = visura_data.get('Amministratore_Nome', '')
-        row['Cognome 1'] = visura_data.get('Amministratore_Cognome', '')
-        row['Tit 1 Nome'] = visura_data.get('Amministratore_Nome', '')
-        row['Tit 1 Cognome'] = visura_data.get('Amministratore_Cognome', '')
+        row['Tit 1 Nome'] = row.get('Nome 1', '')
+        row['Tit 1 Cognome'] = row.get('Cognome 1', '')
+        row['Tit 1 Codfisc'] = row.get('Codfisc 1', '')
+        row['Tit 1 Sesso'] = row.get('Sesso 1', '')
+        row['Tit 1 Datanas'] = row.get('Data Nas 1', '')
+        row['Tit 1 Comunenas'] = row.get('Comune Nas 1', '')
+        row['Tit 1 Provincia Nas'] = row.get('Provincia Nas 1', '')
+        row['Tit 1 Stato Nas'] = row.get('Stato Nas 1', '')
+        row['Tit 1 Tipodoc'] = row.get('Tipo Doc', '')
+        row['Tit 1 Numdoc'] = row.get('Num Doc', '')
+        row['Tit 1 Rilasc Da'] = row.get('Autorita Doc', '')
+        row['Tit 1 Scad Doc'] = row.get('Scadenza Doc', '')
 
     return pd.DataFrame([row])
 
