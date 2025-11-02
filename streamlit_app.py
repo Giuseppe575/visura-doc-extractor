@@ -119,10 +119,10 @@ class DocumentExtractor:
 
         # DENOMINAZIONE / RAGIONE SOCIALE (multipli pattern)
         denominazione_patterns = [
-            r"(?:Denominazione|DENOMINAZIONE)[:\s]*\n?\s*([A-Z][A-Z\s'\.]+(?:S\.R\.L\.|SRL|S\.P\.A\.|SPA|S\.A\.S\.|SAS|SRLS|S\.R\.L\.S\.|SOCIETA'[^\n]+)?)",
+            r"(?:Denominazione|DENOMINAZIONE)[:\s]+([A-Z][^\n]*(?:\n(?!Data\s)[A-Z][^\n]*)*)",
             r"(?:Ragione\s+sociale|RAGIONE\s+SOCIALE)[:\s]*\n?\s*([A-Z][^\n]+)",
+            r"VISURA\s+ORDINARIA[^\n]*\n+\s*\n([^\n]+(?:\n[^\n]+)*?)\n\s*\n",
             r"^([A-Z][A-Z\s'\.]+(?:S\.R\.L\.|SRL|S\.P\.A\.|SOCIETA')[^\n]{0,100})",  # All'inizio del testo
-            r"VISURA.*?\n+([A-Z][A-Z\s'\.]+(?:SOCIETA|S\.R\.L\.|SRL)[^\n]+)",
         ]
         for pattern in denominazione_patterns:
             match = re.search(pattern, text, re.MULTILINE | re.IGNORECASE)
@@ -130,6 +130,8 @@ class DocumentExtractor:
                 denominazione = match.group(1).strip()
                 # Pulisci eventuali artefatti
                 denominazione = re.sub(r'\s+', ' ', denominazione)
+                # Rimuovi "Data" e tutto quello che segue
+                denominazione = re.sub(r'\s+Data\s+.*$', '', denominazione, flags=re.IGNORECASE)
                 # Rimuovi caratteri speciali finali
                 denominazione = re.sub(r'[,\.\-]+$', '', denominazione)
                 if len(denominazione) > 3:
@@ -196,6 +198,7 @@ class DocumentExtractor:
 
         # SEDE LEGALE con indirizzo completo
         sede_patterns = [
+            r"(?:Sede legale|Indirizzo Sede(?:\s+legale)?)[:\s]*\n?\s*([A-Z][A-Z\s']+?)\s*\(([A-Z]{2})\)\s*(?:VIA|PIAZZA|CORSO|VIALE)([^\n]+?)(?:CAP\s*)?(\d{5})",
             r"(?:Sede\s+legale|Indirizzo\s+[Ss]ede)[:\s]*\n?\s*([A-Z][^\n]+?)(?:CAP\s*\d{5}|\n|$)",
             r"(?:Indirizzo)[:\s]*([^\n]+?)(?:\d{5})",
             r"(?:VIA|VIALE|PIAZZA|CORSO)\s+([A-Z][^\n]+?)(?:\s+\d{5})",
@@ -207,6 +210,8 @@ class DocumentExtractor:
                 # Pulisci
                 sede = re.sub(r'\s+', ' ', sede)
                 sede = re.sub(r'CAP.*$', '', sede)
+                # Rimuovi eventuali "legale" finali
+                sede = re.sub(r'\blegale\b\s*$', '', sede, flags=re.IGNORECASE)
                 if len(sede) > 5:
                     data['Sede_Legale'] = sede
                     break
@@ -329,25 +334,22 @@ class DocumentExtractor:
 
         # AMMINISTRATORE / LEGALE RAPPRESENTANTE (NUOVO!)
         amministratore_patterns = [
-            r"(?:Amministratore\s+[Uu]nico|AMMINISTRATORE\s+UNICO)[:\s]*\n?\s*([A-Z][A-Z\s]+)",
-            r"(?:Legale\s+[Rr]appresentante|LEGALE\s+RAPPRESENTANTE)[:\s]*\n?\s*([A-Z][A-Z\s]+)",
-            r"(?:Rappresentante\s+dell'?impresa)[:\s]*\n?\s*([A-Z][A-Z\s]+)",
-            r"(?:Presidente)[:\s]*\n?\s*([A-Z][A-Z\s]+)",
+            r"(?:Amministratore\s+[Uu]nico|AMMINISTRATORE\s+UNICO)[:\s]*\n?\s*([A-Z]+)\s+([A-Z]+?)(?:\s+(?:Rappresentante|RAPPRESENTANTE|nato|NATO|Codice|CODICE|residente|RESIDENTE)|\s*\n|$)",
+            r"(?:Legale\s+[Rr]appresentante|LEGALE\s+RAPPRESENTANTE)[:\s]*\n?\s*([A-Z]+)\s+([A-Z]+?)(?:\s+(?:nato|NATO|Codice|CODICE|residente|RESIDENTE)|\s*\n|$)",
+            r"(?:Amministratore|AMMINISTRATORE)[:\s]*(?:Unico|UNICO)?[:\s]*([A-Z]+)\s+([A-Z]+?)(?:\s+(?:Rappresentante|RAPPRESENTANTE|nato|NATO|Codice|CODICE|residente|RESIDENTE)|\s*\n|$)",
+            r"(?:Presidente)[:\s]*\n?\s*([A-Z]+)\s+([A-Z]+?)(?:\s+(?:nato|NATO|Codice|CODICE)|\s*\n|$)",
         ]
         for pattern in amministratore_patterns:
             match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
             if match and not data.get('Amministratore'):
-                amm = match.group(1).strip()
-                # Pulisci da caratteri extra
-                amm = re.sub(r'\s+', ' ', amm)
-                # Estrai nome e cognome se possibile
-                parts = amm.split()
-                if len(parts) >= 2:
-                    data['Amministratore'] = amm
-                    data['Amministratore_Cognome'] = parts[0]
-                    data['Amministratore_Nome'] = ' '.join(parts[1:])
-                else:
-                    data['Amministratore'] = amm
+                # Ottieni cognome e nome dai primi due gruppi
+                cognome = match.group(1).strip()
+                nome = match.group(2).strip() if len(match.groups()) >= 2 else ''
+
+                if cognome and nome:
+                    data['Amministratore'] = f"{cognome} {nome}"
+                    data['Amministratore_Cognome'] = cognome
+                    data['Amministratore_Nome'] = nome
                 break
 
         # SOCI / TITOLARI (NUOVO!)
@@ -633,7 +635,7 @@ def map_data_to_template(visura_data, documento_data):
         row['Prov Sede'] = visura_data.get('Provincia', '')
         row['Stato Sede'] = 'ITALIA'
         row['Data Ini Rapporto'] = visura_data.get('Data_Costituzione', '')
-        row['Prest Prof'] = 'Tenuta della Contabilità'
+        row['Prest Prof'] = ''  # Campo lasciato vuoto
         row['Tipo Ident'] = 'Diretta'
         row['Data Ident'] = datetime.now().strftime('%Y-%m-%d')
         row['Pep'] = 'NO'
