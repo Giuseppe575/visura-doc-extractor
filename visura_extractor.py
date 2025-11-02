@@ -82,6 +82,11 @@ class VisuraExtractor:
         ragione_pattern = r"(?:Denominazione|DENOMINAZIONE)[:\s]+([A-Z][^\n]*(?:\n(?!Data\s)[A-Z][^\n]*)*)"
         match = re.search(ragione_pattern, text, re.IGNORECASE | re.MULTILINE)
 
+        # Pattern per ditte individuali: cerca dopo "VISURA ORDINARIA DELL'IMPRESA"
+        if not match:
+            ragione_pattern_ditta = r"VISURA\s+ORDINARIA\s+DELL['\']IMPRESA\s*\n+\s*\n([A-Z][A-Z\s]+?)(?:\n\s*\n|\n\s+\d)"
+            match = re.search(ragione_pattern_ditta, text, re.IGNORECASE)
+
         # Pattern alternativo: cerca dopo "VISURA ORDINARIA" per visure che non hanno "Denominazione:"
         if not match:
             ragione_pattern_alt = r"VISURA\s+ORDINARIA[^\n]*\n+\s*\n([^\n]+(?:\n[^\n]+)*?)\n\s*\n"
@@ -95,17 +100,24 @@ class VisuraExtractor:
             ragione = re.sub(r'\s+Data\s+.*$', '', ragione, flags=re.IGNORECASE)
             data['Ragionesociale'] = ragione
 
-        # Forma giuridica
-        forma_pattern = r"Forma giuridica[:\s]+([a-z\s']+(?:limitata|semplificata|per azioni|società|s\.r\.l\.|s\.p\.a\.|s\.a\.s\.)[^\n]*)"
+        # Forma giuridica (includi impresa individuale)
+        forma_pattern = r"Forma giuridica[:\s]+([a-z\s']+(?:limitata|semplificata|per azioni|società|individuale|s\.r\.l\.|s\.p\.a\.|s\.a\.s\.)[^\n]*)"
         match = re.search(forma_pattern, text, re.IGNORECASE)
         if match:
             data['Natura Giuridica'] = match.group(1).strip()
 
-        # Codice Fiscale Azienda
-        cf_pattern = r"Codice fiscale[:\s]+(?:e[^\n]*?(?:Registro\s+Imprese|iscr\.?\s+al))?[:\s]*(\d{11})"
-        match = re.search(cf_pattern, text, re.IGNORECASE)
+        # Codice Fiscale Azienda (supporta sia 11 cifre per società che 16 caratteri per ditte individuali)
+        # Prima prova con 11 cifre (società)
+        cf_pattern_societa = r"Codice fiscale[:\s]+(?:e[^\n]*?(?:Registro\s+Imprese|iscr\.?\s+al))?[:\s]*(\d{11})(?!\d)"
+        match = re.search(cf_pattern_societa, text, re.IGNORECASE)
         if match:
             data['Codfisc Azienda'] = match.group(1)
+        else:
+            # Prova con 16 caratteri (ditta individuale - CF personale)
+            cf_pattern_individuale = r"Codice fiscale[:\s]+(?:e[^\n]*?(?:Registro\s+Imprese|iscr\.?\s+al))?[:\s]*([A-Z]{6}\d{2}[A-Z]\d{2}[A-Z]\d{3}[A-Z])"
+            match = re.search(cf_pattern_individuale, text, re.IGNORECASE)
+            if match:
+                data['Codfisc Azienda'] = match.group(1)
 
         # Partita IVA
         piva_pattern = r"Partita IVA[:\s]+(\d{11})"
@@ -191,16 +203,23 @@ class VisuraExtractor:
                 'nome': nome
             })
 
-        # Pattern per titolari
-        titolare_pattern = r"(?:Titolare|TITOLARE)[:\s]*([A-Z]+)\s+([A-Z]+?)(?:\s+(?:nato|NATO|Codice|CODICE|residente|RESIDENTE)|\s*\n|$)"
-        for match in re.finditer(titolare_pattern, text):
-            cognome = match.group(1).strip()
-            nome = match.group(2).strip()
-            persone.append({
-                'carica': 'TITOLARE',
-                'cognome': cognome,
-                'nome': nome
-            })
+        # Pattern per titolari (gestisce ditte individuali)
+        # Pattern 1: "Titolare di impresa individualeFUSTO VALENTINA" o "Titolare Firmataria FUSTO VALENTINA"
+        titolare_pattern1 = r"(?:Titolare|TITOLARE)(?:\s+di\s+impresa\s+individuale|\s+Firmataria)?[:\s\n]*([A-Z]+)\s+([A-Z]+?)(?:\s+(?:nato|NATO|Codice|CODICE|Registro|REGISTRO)|\s*\n|$)"
+        # Pattern 2: Standard "Titolare: NOME COGNOME"
+        titolare_pattern2 = r"(?:Titolare|TITOLARE)[:\s]*([A-Z]+)\s+([A-Z]+?)(?:\s+(?:nato|NATO|Codice|CODICE|residente|RESIDENTE)|\s*\n|$)"
+
+        for pattern in [titolare_pattern1, titolare_pattern2]:
+            for match in re.finditer(pattern, text, re.IGNORECASE):
+                cognome = match.group(1).strip()
+                nome = match.group(2).strip()
+                # Evita duplicati
+                if not any(p['cognome'] == cognome and p['nome'] == nome for p in persone):
+                    persone.append({
+                        'carica': 'TITOLARE',
+                        'cognome': cognome,
+                        'nome': nome
+                    })
 
         # Per ogni persona, cerca i dati personali nel testo
         for i, persona in enumerate(persone[:5], start=1):  # Massimo 5 persone
@@ -257,6 +276,22 @@ class VisuraExtractor:
                     data[f'Indirizzo Res {i}'] = indirizzo_res
                     data[f'Cap Res {i}'] = domicilio_match.group(5)
                     data[f'Stato Res {i}'] = 'ITALIA'
+
+        # Gestione speciale per ditte individuali
+        # Se il CF azienda è di 16 caratteri (CF personale) e c'è un titolare senza CF,
+        # copia il CF azienda al titolare e deriva il sesso
+        cf_azienda = data.get('Codfisc Azienda', '')
+        if len(cf_azienda) == 16 and data.get('Carica 1') == 'TITOLARE':
+            # Se il titolare non ha già un CF, usa il CF dell'azienda
+            if not data.get('Codfisc 1'):
+                data['Codfisc 1'] = cf_azienda
+
+                # Deriva il sesso dal CF
+                try:
+                    giorno_sesso = int(cf_azienda[9:11])
+                    data['Sesso 1'] = 'M' if giorno_sesso < 40 else 'F'
+                except:
+                    pass
 
         return data
 
