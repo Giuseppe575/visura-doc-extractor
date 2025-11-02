@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+*.egg-info/
+dist/
+build/
+
+# Excel files (output)
+dati_estratti_*.xlsx
+
+# Test files
+test_extraction.py
+verifica_finale.py
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Folders with documents (not to be committed)
+ASERO CONSOLATO/
+BEATO LUIGI/
+DIOLOSA' CARMEN/
+ENNECI SERVICE/
+FUSTO VALENTINA/
+LA PANETTERIA/
+PANFOODS S.R.L/
+TABACCHI DI AIELLO/
+VENTURA ROSA MANUELA/
+ZUMMO ALFIO/

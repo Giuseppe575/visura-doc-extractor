@@ -1,0 +1,524 @@
+"""
+Script per l'estrazione automatica di dati da Visure Camerali e Documenti di Identità
+e scrittura nel formato Excel template fornito.
+"""
+
+import os
+import re
+import pandas as pd
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+from datetime import datetime
+import PyPDF2
+from PIL import Image
+import pytesseract
+
+# Se Tesseract non è nel PATH, specificare il percorso
+# pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+
+
+class VisuraExtractor:
+    """Classe per l'estrazione dati dalle visure camerali"""
+
+    def __init__(self):
+        self.data = {}
+
+    def extract_text_from_pdf(self, pdf_path: str) -> str:
+        """Estrae il testo da un PDF"""
+        try:
+            text = ""
+            with open(pdf_path, 'rb') as file:
+                pdf_reader = PyPDF2.PdfReader(file)
+                for page in pdf_reader.pages:
+                    page_text = page.extract_text()
+                    if page_text:
+                        text += page_text + "\n"
+
+            # Se il testo estratto è vuoto o molto breve, prova con OCR
+            if len(text.strip()) < 100:
+                print(f"  Testo estratto insufficiente, provo con OCR...")
+                text = self.extract_text_with_ocr(pdf_path)
+
+            return text
+        except Exception as e:
+            print(f"  Errore nell'estrazione da {pdf_path}: {e}")
+            return ""
+
+    def extract_text_with_ocr(self, pdf_path: str) -> str:
+        """Estrae testo da PDF usando OCR"""
+        try:
+            from pdf2image import convert_from_path
+
+            # Converti PDF in immagini
+            images = convert_from_path(pdf_path, dpi=300)
+            text = ""
+
+            for i, image in enumerate(images):
+                # Applica OCR
+                page_text = pytesseract.image_to_string(image, lang='ita')
+                text += page_text + "\n"
+
+            return text
+        except Exception as e:
+            print(f"  Errore OCR: {e}")
+            return ""
+
+    def extract_text_from_image(self, image_path: str) -> str:
+        """Estrae testo da un'immagine usando OCR"""
+        try:
+            image = Image.open(image_path)
+            text = pytesseract.image_to_string(image, lang='ita')
+            return text
+        except Exception as e:
+            print(f"  Errore nell'estrazione da immagine {image_path}: {e}")
+            return ""
+
+    def extract_visura_data(self, text: str) -> Dict:
+        """Estrae i dati principali da una visura camerale"""
+        data = {}
+
+        # Denominazione/Ragione Sociale
+        # Pattern principale: cerca dopo "Denominazione:"
+        ragione_pattern = r"(?:Denominazione|DENOMINAZIONE)[:\s]+([A-Z][^\n]*(?:\n(?!Data\s)[A-Z][^\n]*)*)"
+        match = re.search(ragione_pattern, text, re.IGNORECASE | re.MULTILINE)
+
+        # Pattern alternativo: cerca dopo "VISURA ORDINARIA" per visure che non hanno "Denominazione:"
+        if not match:
+            ragione_pattern_alt = r"VISURA\s+ORDINARIA[^\n]*\n+\s*\n([^\n]+(?:\n[^\n]+)*?)\n\s*\n"
+            match = re.search(ragione_pattern_alt, text)
+
+        if match:
+            # Rimuovi eventuali newline interni e normalizza spazi
+            ragione = match.group(1).strip()
+            ragione = re.sub(r'\s+', ' ', ragione)  # Normalizza spazi multipli/newline
+            # Rimuovi eventuali "Data" finali che potrebbero essere stati catturati
+            ragione = re.sub(r'\s+Data\s+.*$', '', ragione, flags=re.IGNORECASE)
+            data['Ragionesociale'] = ragione
+
+        # Forma giuridica
+        forma_pattern = r"Forma giuridica[:\s]+([a-z\s']+(?:limitata|semplificata|per azioni|società|s\.r\.l\.|s\.p\.a\.|s\.a\.s\.)[^\n]*)"
+        match = re.search(forma_pattern, text, re.IGNORECASE)
+        if match:
+            data['Natura Giuridica'] = match.group(1).strip()
+
+        # Codice Fiscale
+        cf_pattern = r"Codice fiscale[:\s]+(?:e[^\n]*)?[:\s]*(\d{11})"
+        match = re.search(cf_pattern, text, re.IGNORECASE)
+        if match:
+            data['Codfisc Azienda'] = match.group(1)
+
+        # Partita IVA
+        piva_pattern = r"Partita IVA[:\s]+(\d{11})"
+        match = re.search(piva_pattern, text, re.IGNORECASE)
+        if match:
+            data['Partita Iva Azienda'] = match.group(1)
+
+        # CCIAA e REA
+        cciaa_pattern = r"(?:Camera di Commercio|CCIAA)[^\n]*?([A-Z\s]+(?:SICILIA|MILANO|ROMA|NAPOLI|TORINO|CATANIA|PALERMO)[^\n]*)"
+        match = re.search(cciaa_pattern, text, re.IGNORECASE)
+        if match:
+            data['Cciaa'] = match.group(1).strip()
+
+        rea_pattern = r"(?:REA|Numero.*?REA)[:\s]+([A-Z]{2})\s*-?\s*(\d+)"
+        match = re.search(rea_pattern, text, re.IGNORECASE)
+        if match:
+            data['Cciaa'] = f"{match.group(1)} - {match.group(2)}"
+
+        # Sede legale
+        sede_pattern = r"(?:Sede legale|Indirizzo Sede(?:\s+legale)?)[:\s]+([A-Z][A-Z\s']+?)\s*\(([A-Z]{2})\)\s*(?:VIA|PIAZZA|CORSO|VIALE)([^\n]+?)(?:CAP\s*)?(\d{5})"
+        match = re.search(sede_pattern, text, re.IGNORECASE)
+        if match:
+            data['Comune Sede'] = match.group(1).strip()
+            data['Prov Sede'] = match.group(2)
+            data['Indirizzo Sede'] = match.group(3).strip()
+            data['Cap Sede'] = match.group(4)
+            data['Stato Sede'] = 'ITALIA'
+
+        # Attività prevalente
+        attivita_pattern = r"(?:Attività prevalente|attività prevalente)[:\s]+([a-z][a-z\s]+(?:prodotti|servizi|commercio|produzione)[^\n]{,100})"
+        match = re.search(attivita_pattern, text, re.IGNORECASE)
+        if match:
+            data['Attivita'] = match.group(1).strip()
+
+        # Codice ATECO
+        ateco_pattern = r"(?:Codice ATECO|ATECO)[:\s]+(\d{2}\.\d{2}\.\d{1,2})"
+        match = re.search(ateco_pattern, text, re.IGNORECASE)
+        if match:
+            data['Cod Ateco'] = match.group(1)
+
+        # Data costituzione
+        costituzione_pattern = r"(?:Data.*?costituzione|atto di costituzione)[:\s]+(\d{2}\/\d{2}\/\d{4})"
+        match = re.search(costituzione_pattern, text, re.IGNORECASE)
+        if match:
+            data['Data Ini Rapporto'] = match.group(1)
+
+        # Data inizio attività
+        inizio_pattern = r"Data inizio attività[:\s]+(\d{2}\/\d{2}\/\d{4})"
+        match = re.search(inizio_pattern, text, re.IGNORECASE)
+        if match:
+            data['Data Ini Rapporto'] = match.group(1)
+
+        # Capitale sociale
+        capitale_pattern = r"(?:Capitale sociale|Versato)[:\s]+(\d+[\.,]\d{2})"
+        match = re.search(capitale_pattern, text, re.IGNORECASE)
+        if match:
+            # Non c'è un campo capitale nel template, ma lo conserviamo
+            pass
+
+        # Estrazione di tutte le persone (amministratori, soci, titolari)
+        # Pattern per persone con carica
+        persone = []
+
+        # Pattern amministratore
+        amm_pattern = r"(?:Amministratore|AMMINISTRATORE)[:\s]*(?:Unico|UNICO)?[:\s]*([A-Z]+)\s+([A-Z]+?)(?:\s+(?:Rappresentante|RAPPRESENTANTE|nato|NATO|Codice|CODICE|residente|RESIDENTE)|\s*\n|$)"
+        match = re.search(amm_pattern, text)
+        if match:
+            persone.append({
+                'carica': 'AMMINISTRATORE',
+                'cognome': match.group(1).strip(),
+                'nome': match.group(2).strip()
+            })
+
+        # Pattern per soci
+        soci_pattern = r"(?:Socio|SOCIO)[:\s]*([A-Z]+)\s+([A-Z]+?)(?:\s+(?:nato|NATO|Codice|CODICE|residente|RESIDENTE|quota|QUOTA)|\s*\n|$)"
+        for match in re.finditer(soci_pattern, text):
+            persone.append({
+                'carica': 'SOCIO',
+                'cognome': match.group(1).strip(),
+                'nome': match.group(2).strip()
+            })
+
+        # Pattern per titolari
+        titolare_pattern = r"(?:Titolare|TITOLARE)[:\s]*([A-Z]+)\s+([A-Z]+?)(?:\s+(?:nato|NATO|Codice|CODICE|residente|RESIDENTE)|\s*\n|$)"
+        for match in re.finditer(titolare_pattern, text):
+            persone.append({
+                'carica': 'TITOLARE',
+                'cognome': match.group(1).strip(),
+                'nome': match.group(2).strip()
+            })
+
+        # Assegna le persone ai campi numerati
+        for i, persona in enumerate(persone[:5], start=1):  # Massimo 5 persone
+            data[f'Carica {i}'] = persona['carica']
+            data[f'Cognome {i}'] = persona['cognome']
+            data[f'Nome {i}'] = persona['nome']
+
+        # Codice fiscale amministratore/persone
+        cf_amm_pattern = r"Codice fiscale[:\s]+([A-Z]{6}\d{2}[A-Z]\d{2}[A-Z]\d{3}[A-Z])"
+        matches = re.findall(cf_amm_pattern, text)
+        # Assegna i CF alle persone (il primo CF è dell'azienda, i successivi sono delle persone)
+        for i, cf in enumerate(matches[1:len(persone)+1], start=1):
+            if i <= len(persone):
+                data[f'Codfisc {i}'] = cf
+
+        return data
+
+    def extract_documento_data(self, text: str) -> Dict:
+        """Estrae i dati da un documento di identità"""
+        data = {}
+
+        # Nome
+        nome_pattern = r"Nome[:\s]+([A-Z]+)"
+        match = re.search(nome_pattern, text)
+        if match:
+            data['Nome'] = match.group(1).strip()
+
+        # Cognome
+        cognome_pattern = r"Cognome[:\s]+([A-Z]+)"
+        match = re.search(cognome_pattern, text)
+        if match:
+            data['Cognome'] = match.group(1).strip()
+
+        # Data di nascita
+        nascita_pattern = r"nato il[:\s]+(\d{2}\/\d{2}\/\d{4})"
+        match = re.search(nascita_pattern, text, re.IGNORECASE)
+        if match:
+            data['Data Nas'] = match.group(1)
+
+        # Luogo di nascita
+        luogo_pattern = r"(?:nato|à)[:\s]+[^\n]*?([A-Z\s]+)\s*\(([A-Z]{2})\)"
+        match = re.search(luogo_pattern, text)
+        if match:
+            data['Comune Nas'] = match.group(1).strip()
+            data['Provincia Nas'] = match.group(2)
+            data['Stato Nas'] = 'ITALIA'
+
+        # Codice fiscale
+        cf_pattern = r"([A-Z]{6}\d{2}[A-Z]\d{2}[A-Z]\d{3}[A-Z])"
+        match = re.search(cf_pattern, text)
+        if match:
+            data['Codfisc'] = match.group(1)
+            # Estrai sesso dal CF (9° carattere: dispari=M, pari=F dopo 40)
+            nono = int(match.group(1)[9:11])
+            data['Sesso'] = 'M' if nono < 40 else 'F'
+
+        # Residenza
+        residenza_pattern = r"Residenza[:\s]+([A-Z][^\n]+)"
+        match = re.search(residenza_pattern, text, re.IGNORECASE)
+        if match:
+            res = match.group(1).strip()
+            # Prova a separare indirizzo, comune, cap
+            res_parts = re.search(r"([^,]+),?\s*([A-Z\s]+)\s*\(([A-Z]{2})\).*?(\d{5})?", res)
+            if res_parts:
+                data['Indirizzo Res'] = res_parts.group(1).strip()
+                data['Comune Res'] = res_parts.group(2).strip()
+                data['Prov Res'] = res_parts.group(3)
+                if res_parts.group(4):
+                    data['Cap Res'] = res_parts.group(4)
+                data['Stato Res'] = 'ITALIA'
+
+        # Tipo documento
+        tipo_doc_pattern = r"(CARTA D['\s]*IDENTIT[AÀ]|PATENTE|PASSAPORTO)"
+        match = re.search(tipo_doc_pattern, text, re.IGNORECASE)
+        if match:
+            data['Tipo Doc'] = match.group(1).upper().replace("'", "'")
+
+        # Numero documento
+        num_doc_pattern = r"(?:N[°\s]*|Numero)[:\s]*([A-Z]{2}\s*\d+)"
+        match = re.search(num_doc_pattern, text, re.IGNORECASE)
+        if match:
+            data['Num Doc'] = match.group(1).replace(' ', '')
+
+        # Rilasciato da
+        rilascio_pattern = r"(?:Rilasciato da|Firma dal|S\.M\.|COMUNE DI)[:\s]*([A-Z][A-Z\s\.]+)"
+        match = re.search(rilascio_pattern, text, re.IGNORECASE)
+        if match:
+            data['Autorita Doc'] = match.group(1).strip()
+
+        # Scadenza
+        scadenza_pattern = r"(?:Scadenza|scadenza)[:\s]+(\d{2}\/\d{2}\/\d{4})"
+        match = re.search(scadenza_pattern, text, re.IGNORECASE)
+        if match:
+            data['Scadenza Doc'] = match.group(1)
+
+        # Data documento (spesso diversa dalla scadenza)
+        data_doc_pattern = r"(?:Data di|del)[:\s]+(\d{2}\/\d{2}\/\d{4})"
+        match = re.search(data_doc_pattern, text, re.IGNORECASE)
+        if match:
+            data['Data Doc'] = match.group(1)
+
+        return data
+
+
+class ExcelWriter:
+    """Classe per scrivere i dati nel formato Excel template"""
+
+    def __init__(self, template_path: str):
+        """Inizializza con il template Excel"""
+        try:
+            template_original = pd.read_excel(template_path)
+            # Salva le colonne originali del template per preservarle
+            self.columns = template_original.columns.tolist()
+            # Inizializza DataFrame vuoto con le colonne del template
+            self.template_df = pd.DataFrame(columns=self.columns)
+            print(f"Template caricato con {len(self.columns)} colonne")
+        except Exception as e:
+            print(f"Errore nel caricamento del template: {e}")
+            # Crea un DataFrame vuoto con le colonne base
+            self.template_df = pd.DataFrame()
+            self.columns = []
+
+    def create_row_from_data(self, visura_data: Dict, documenti_data_list: List[Dict]) -> Dict:
+        """Crea una riga di dati da inserire nel template"""
+        row = {}
+
+        # Inizializza tutte le colonne a None
+        for col in self.columns:
+            row[col] = None
+
+        # Dati base
+        row['Pers Soc'] = 'S' if visura_data.get('Ragionesociale') else 'P'
+        row['Intestazione'] = visura_data.get('Ragionesociale', '')
+        row['Ragionesociale'] = visura_data.get('Ragionesociale', '')
+        row['Natura Giuridica'] = visura_data.get('Natura Giuridica', '')
+        row['Codfisc Azienda'] = visura_data.get('Codfisc Azienda', '')
+        row['Partita Iva Azienda'] = visura_data.get('Partita Iva Azienda', '')
+        row['Cciaa'] = visura_data.get('Cciaa', '')
+        row['Attivita'] = visura_data.get('Attivita', '')
+        row['Cod Ateco'] = visura_data.get('Cod Ateco', '')
+
+        # Sede
+        row['Indirizzo Sede'] = visura_data.get('Indirizzo Sede', '')
+        row['Comune Sede'] = visura_data.get('Comune Sede', '')
+        row['Cap Sede'] = visura_data.get('Cap Sede', '')
+        row['Prov Sede'] = visura_data.get('Prov Sede', '')
+        row['Stato Sede'] = visura_data.get('Stato Sede', 'ITALIA')
+
+        # Date
+        row['Data Ini Rapporto'] = visura_data.get('Data Ini Rapporto', '')
+
+        # Prestazione professionale (lasciato vuoto)
+        row['Prest Prof'] = ''
+
+        # Gestione di tutte le persone (amministratori, soci, titolari)
+        # Determina quante persone sono state estratte dalla visura
+        num_persone = 0
+        for i in range(1, 6):  # Massimo 5 persone
+            if f'Carica {i}' in visura_data or f'Nome {i}' in visura_data:
+                num_persone = i
+
+        # Popola i dati di ogni persona
+        for i in range(1, num_persone + 1):
+            # Dati dalla visura
+            row[f'Carica {i}'] = visura_data.get(f'Carica {i}', '')
+            row[f'Nome {i}'] = visura_data.get(f'Nome {i}', '')
+            row[f'Cognome {i}'] = visura_data.get(f'Cognome {i}', '')
+            row[f'Codfisc {i}'] = visura_data.get(f'Codfisc {i}', '')
+
+            # Se c'è un documento corrispondente, aggiungi i dati
+            if i - 1 < len(documenti_data_list):
+                doc_data = documenti_data_list[i - 1]
+
+                # Completa i dati mancanti con quelli del documento
+                if not row.get(f'Nome {i}'):
+                    row[f'Nome {i}'] = doc_data.get('Nome', '')
+                if not row.get(f'Cognome {i}'):
+                    row[f'Cognome {i}'] = doc_data.get('Cognome', '')
+                if not row.get(f'Codfisc {i}'):
+                    row[f'Codfisc {i}'] = doc_data.get('Codfisc', '')
+
+                # Dati aggiuntivi dal documento
+                row[f'Sesso {i}'] = doc_data.get('Sesso', '')
+                row[f'Data Nas {i}'] = doc_data.get('Data Nas', '')
+                row[f'Comune Nas {i}'] = doc_data.get('Comune Nas', '')
+                row[f'Provincia Nas {i}'] = doc_data.get('Provincia Nas', '')
+                row[f'Stato Nas {i}'] = doc_data.get('Stato Nas', 'ITALIA')
+                row[f'Indirizzo Res {i}'] = doc_data.get('Indirizzo Res', '')
+                row[f'Comune Res {i}'] = doc_data.get('Comune Res', '')
+                row[f'Cap Res {i}'] = doc_data.get('Cap Res', '')
+                row[f'Prov Res {i}'] = doc_data.get('Prov Res', '')
+                row[f'Stato Res {i}'] = doc_data.get('Stato Res', 'ITALIA')
+
+                # Documenti di identità (solo per la prima persona - layout template)
+                if i == 1:
+                    row['Tipo Doc'] = doc_data.get('Tipo Doc', '')
+                    row['Num Doc'] = doc_data.get('Num Doc', '')
+                    row['Autorita Doc'] = doc_data.get('Autorita Doc', '')
+                    row['Data Doc'] = doc_data.get('Data Doc', '')
+                    row['Scadenza Doc'] = doc_data.get('Scadenza Doc', '')
+
+        # Identificazione
+        row['Tipo Ident'] = 'Diretta'
+        row['Data Ident'] = datetime.now().strftime('%Y-%m-%d')
+
+        # PEP
+        row['Pep'] = 'NO'
+
+        return row
+
+    def append_row(self, row_data: Dict):
+        """Aggiunge una riga al DataFrame"""
+        # Assicurati che row_data abbia tutte le colonne del template
+        # Riempi con None le colonne mancanti
+        complete_row = {col: row_data.get(col, None) for col in self.columns}
+
+        # Crea un DataFrame con la nuova riga completa
+        new_row_df = pd.DataFrame([complete_row], columns=self.columns)
+
+        # Append alla tabella esistente
+        self.template_df = pd.concat([self.template_df, new_row_df], ignore_index=True)
+
+    def save(self, output_path: str):
+        """Salva il DataFrame in Excel"""
+        try:
+            self.template_df.to_excel(output_path, index=False)
+            print(f"\nFile salvato: {output_path}")
+            print(f"Righe totali: {len(self.template_df)}")
+        except Exception as e:
+            print(f"Errore nel salvare il file: {e}")
+
+
+def process_folder(folder_path: Path, extractor: VisuraExtractor) -> Tuple[Dict, List[Dict]]:
+    """Processa una cartella contenente visura e documenti"""
+    print(f"\nProcesso cartella: {folder_path.name}")
+
+    visura_data = {}
+    documenti_data = []
+
+    # Lista file nella cartella
+    files = list(folder_path.iterdir())
+
+    for file in files:
+        if not file.is_file():
+            continue
+
+        file_lower = file.name.lower()
+
+        # Identifica visura camerale
+        if 'visur' in file_lower or 'visuord' in file_lower:
+            print(f"  Visura trovata: {file.name}")
+            text = extractor.extract_text_from_pdf(str(file))
+            visura_data = extractor.extract_visura_data(text)
+            print(f"    Estratti {len(visura_data)} campi dalla visura")
+
+        # Identifica documento di identità
+        elif 'doc' in file_lower or 'identit' in file_lower or 'carta' in file_lower:
+            print(f"  Documento trovato: {file.name}")
+
+            if file.suffix.lower() == '.pdf':
+                text = extractor.extract_text_from_pdf(str(file))
+            elif file.suffix.lower() in ['.jpg', '.jpeg', '.png']:
+                text = extractor.extract_text_from_image(str(file))
+            else:
+                continue
+
+            doc_data = extractor.extract_documento_data(text)
+            if doc_data:
+                documenti_data.append(doc_data)
+                print(f"    Estratti {len(doc_data)} campi dal documento")
+
+    return visura_data, documenti_data
+
+
+def main():
+    """Funzione principale"""
+    print("=" * 80)
+    print("ESTRATTORE DATI VISURE CAMERALI")
+    print("=" * 80)
+
+    # Percorsi
+    base_dir = Path(__file__).parent
+    template_path = base_dir / "format import.xlsx"
+    output_path = base_dir / f"dati_estratti_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+
+    # Verifica template
+    if not template_path.exists():
+        print(f"ERRORE: Template non trovato: {template_path}")
+        return
+
+    # Inizializza
+    extractor = VisuraExtractor()
+    excel_writer = ExcelWriter(str(template_path))
+
+    # Trova tutte le cartelle da processare
+    folders = [f for f in base_dir.iterdir()
+              if f.is_dir() and not f.name.startswith('.')]
+
+    print(f"\nTrovate {len(folders)} cartelle da processare")
+
+    # Processa ogni cartella
+    for folder in folders:
+        try:
+            visura_data, documenti_data = process_folder(folder, extractor)
+
+            # Crea riga con i dati
+            if visura_data or documenti_data:
+                row = excel_writer.create_row_from_data(visura_data, documenti_data)
+                excel_writer.append_row(row)
+                print(f"  [OK] Dati aggiunti per {folder.name}")
+            else:
+                print(f"  [SKIP] Nessun dato estratto da {folder.name}")
+
+        except Exception as e:
+            print(f"  [ERROR] Errore in {folder.name}: {e}")
+
+    # Salva risultati
+    excel_writer.save(str(output_path))
+
+    print("\n" + "=" * 80)
+    print("ELABORAZIONE COMPLETATA")
+    print("=" * 80)
+
+
+if __name__ == "__main__":
+    main()
