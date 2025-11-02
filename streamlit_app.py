@@ -150,8 +150,8 @@ class DocumentExtractor:
                 data['Partita_IVA'] = match.group(1)
                 break
 
-        # CODICE FISCALE (pattern semplificato come visura_extractor.py)
-        cf_pattern = r"Codice fiscale[:\s]+(?:e[^\n]*)?[:\s]*(\d{11})"
+        # CODICE FISCALE AZIENDA (pattern migliorato)
+        cf_pattern = r"Codice fiscale[:\s]+(?:e[^\n]*?(?:Registro\s+Imprese|iscr\.?\s+al))?[:\s]*(\d{11})"
         match = re.search(cf_pattern, text, re.IGNORECASE)
         if match:
             data['Codice_Fiscale'] = match.group(1)

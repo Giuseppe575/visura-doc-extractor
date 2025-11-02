@@ -101,8 +101,8 @@ class VisuraExtractor:
         if match:
             data['Natura Giuridica'] = match.group(1).strip()
 
-        # Codice Fiscale
-        cf_pattern = r"Codice fiscale[:\s]+(?:e[^\n]*)?[:\s]*(\d{11})"
+        # Codice Fiscale Azienda
+        cf_pattern = r"Codice fiscale[:\s]+(?:e[^\n]*?(?:Registro\s+Imprese|iscr\.?\s+al))?[:\s]*(\d{11})"
         match = re.search(cf_pattern, text, re.IGNORECASE)
         if match:
             data['Codfisc Azienda'] = match.group(1)
@@ -165,51 +165,98 @@ class VisuraExtractor:
             # Non c'è un campo capitale nel template, ma lo conserviamo
             pass
 
-        # Estrazione di tutte le persone (amministratori, soci, titolari)
-        # Pattern per persone con carica
+        # Estrazione di tutte le persone (amministratori, soci, titolari) con dati personali
         persone = []
 
         # Pattern amministratore
         amm_pattern = r"(?:Amministratore|AMMINISTRATORE)[:\s]*(?:Unico|UNICO)?[:\s]*([A-Z]+)\s+([A-Z]+?)(?:\s+(?:Rappresentante|RAPPRESENTANTE|nato|NATO|Codice|CODICE|residente|RESIDENTE)|\s*\n|$)"
         match = re.search(amm_pattern, text)
         if match:
+            cognome = match.group(1).strip()
+            nome = match.group(2).strip()
             persone.append({
                 'carica': 'AMMINISTRATORE',
-                'cognome': match.group(1).strip(),
-                'nome': match.group(2).strip()
+                'cognome': cognome,
+                'nome': nome
             })
 
         # Pattern per soci
         soci_pattern = r"(?:Socio|SOCIO)[:\s]*([A-Z]+)\s+([A-Z]+?)(?:\s+(?:nato|NATO|Codice|CODICE|residente|RESIDENTE|quota|QUOTA)|\s*\n|$)"
         for match in re.finditer(soci_pattern, text):
+            cognome = match.group(1).strip()
+            nome = match.group(2).strip()
             persone.append({
                 'carica': 'SOCIO',
-                'cognome': match.group(1).strip(),
-                'nome': match.group(2).strip()
+                'cognome': cognome,
+                'nome': nome
             })
 
         # Pattern per titolari
         titolare_pattern = r"(?:Titolare|TITOLARE)[:\s]*([A-Z]+)\s+([A-Z]+?)(?:\s+(?:nato|NATO|Codice|CODICE|residente|RESIDENTE)|\s*\n|$)"
         for match in re.finditer(titolare_pattern, text):
+            cognome = match.group(1).strip()
+            nome = match.group(2).strip()
             persone.append({
                 'carica': 'TITOLARE',
-                'cognome': match.group(1).strip(),
-                'nome': match.group(2).strip()
+                'cognome': cognome,
+                'nome': nome
             })
 
-        # Assegna le persone ai campi numerati
+        # Per ogni persona, cerca i dati personali nel testo
         for i, persona in enumerate(persone[:5], start=1):  # Massimo 5 persone
-            data[f'Carica {i}'] = persona['carica']
-            data[f'Cognome {i}'] = persona['cognome']
-            data[f'Nome {i}'] = persona['nome']
+            cognome = persona['cognome']
+            nome = persona['nome']
 
-        # Codice fiscale amministratore/persone
-        cf_amm_pattern = r"Codice fiscale[:\s]+([A-Z]{6}\d{2}[A-Z]\d{2}[A-Z]\d{3}[A-Z])"
-        matches = re.findall(cf_amm_pattern, text)
-        # Assegna i CF alle persone (il primo CF è dell'azienda, i successivi sono delle persone)
-        for i, cf in enumerate(matches[1:len(persone)+1], start=1):
-            if i <= len(persone):
-                data[f'Codfisc {i}'] = cf
+            # Assegna i dati base
+            data[f'Carica {i}'] = persona['carica']
+            data[f'Cognome {i}'] = cognome
+            data[f'Nome {i}'] = nome
+
+            # Cerca i dati personali di questa persona
+            # Cerca SOLO nella sezione dettagliata che contiene Nato, CF e domicilio tutti insieme
+            persona_section_pattern = rf"{cognome}\s+{nome}[^\n]*\n+Nato\s+a.*?domicilio.*?CAP\s+\d{{5}}"
+            persona_match = re.search(persona_section_pattern, text, re.DOTALL | re.IGNORECASE)
+
+            if persona_match:
+                persona_text = persona_match.group(0)
+
+                # Data e luogo di nascita: "Nato a LUOGO (PROV) il DD/MM/YYYY"
+                nascita_pattern = r"Nato\s+a\s+([A-Z][A-Za-z\s]+?)\s*\(([A-Z]{2})\)\s+il\s+(\d{2}/\d{2}/\d{4})"
+                nascita_match = re.search(nascita_pattern, persona_text, re.IGNORECASE)
+                if nascita_match:
+                    data[f'Comune Nas {i}'] = nascita_match.group(1).strip()
+                    data[f'Provincia Nas {i}'] = nascita_match.group(2)
+                    data[f'Data Nas {i}'] = nascita_match.group(3)
+                    data[f'Stato Nas {i}'] = 'ITALIA'
+
+                    # Estrai sesso dal codice fiscale (se disponibile) o dalla data
+                    # Per ora impostiamo in base al nome, o lo lasciamo vuoto
+                    # Lo estrarremo dal CF quando lo troviamo
+
+                # Codice fiscale: "Codice fiscale: XXXXXXXXXXXXXXXX"
+                cf_persona_pattern = r"Codice fiscale[:\s]+([A-Z]{6}\d{2}[A-Z]\d{2}[A-Z]\d{3}[A-Z])"
+                cf_persona_match = re.search(cf_persona_pattern, persona_text, re.IGNORECASE)
+                if cf_persona_match:
+                    cf = cf_persona_match.group(1)
+                    data[f'Codfisc {i}'] = cf
+
+                    # Estrai sesso dal CF (9° carattere: <40=M, >=40=F)
+                    try:
+                        giorno_sesso = int(cf[9:11])
+                        data[f'Sesso {i}'] = 'M' if giorno_sesso < 40 else 'F'
+                    except:
+                        pass
+
+                # Domicilio/Residenza: "domicilio COMUNE (PROV) VIA INDIRIZZO CAP XXXXX"
+                domicilio_pattern = r"domicilio\s+([A-Z][A-Za-z\s]+?)\s*\(([A-Z]{2})\)\s+(VIA|PIAZZA|CORSO|VIALE)\s+([^\n]+?)\s+CAP\s+(\d{5})"
+                domicilio_match = re.search(domicilio_pattern, persona_text, re.IGNORECASE)
+                if domicilio_match:
+                    data[f'Comune Res {i}'] = domicilio_match.group(1).strip()
+                    data[f'Prov Res {i}'] = domicilio_match.group(2)
+                    indirizzo_res = domicilio_match.group(4).strip()
+                    data[f'Indirizzo Res {i}'] = indirizzo_res
+                    data[f'Cap Res {i}'] = domicilio_match.group(5)
+                    data[f'Stato Res {i}'] = 'ITALIA'
 
         return data
 
