@@ -10,12 +10,13 @@ Sistema automatico per l'estrazione di dati da **Visure Camerali** e **Documenti
 - Processamento batch di multiple cartelle
 - Supporto per visure camerali italiane
 - Estrazione dati da carte d'identità e documenti
+- Estrazione multipla di soci/amministratori (fino a 5 persone)
 
 ## Requisiti
 
 ### Software necessario
 
-1. **Python 3.8+** (già installato)
+1. **Python 3.8+**
 2. **Tesseract OCR** (per il riconoscimento ottico dei caratteri)
 
 ### Installazione Tesseract OCR (Windows)
@@ -25,20 +26,25 @@ Sistema automatico per l'estrazione di dati da **Visure Camerali** e **Documenti
 3. Durante l'installazione, assicurati di selezionare il language pack **Italiano**
 4. Aggiungi Tesseract al PATH di sistema oppure modifica lo script
 
-Se Tesseract non è nel PATH, modifica la riga 19 di `visura_extractor.py`:
+Se Tesseract non è nel PATH, modifica la riga 17 di `visura_extractor.py`:
 ```python
 pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 ```
 
 ### Librerie Python
 
-Le librerie necessarie sono già state installate:
+Installa le dipendenze con:
+```bash
+pip install pandas openpyxl PyPDF2 pytesseract pdf2image pillow
+```
+
+Librerie richieste:
+- pandas (manipolazione dati)
 - openpyxl (gestione Excel)
+- PyPDF2 (estrazione testo da PDF)
 - pytesseract (wrapper Python per Tesseract)
 - pdf2image (conversione PDF in immagini)
-- PyPDF2 (estrazione testo da PDF)
 - pillow (gestione immagini)
-- pandas (manipolazione dati)
 
 ## Struttura delle Cartelle
 
@@ -67,7 +73,7 @@ Semplicemente fai doppio click su `visura_extractor.py`
 ### Metodo 2: Da terminale
 
 ```bash
-cd "C:\Users\atisg\OneDrive - giuseppe strifezza\Desktop\prova estrazione"
+cd "path/to/prova estrazione"
 python visura_extractor.py
 ```
 
@@ -80,7 +86,7 @@ dati_estratti_YYYYMMDD_HHMMSS.xlsx
 
 Il file conterrà:
 - Una riga per ogni cartella processata
-- Tutte le colonne del template originale
+- Tutte le 149 colonne del template originale preservate
 - Dati estratti dalle visure e documenti
 
 ## Dati Estratti
@@ -94,7 +100,7 @@ Il file conterrà:
 - Sede legale (indirizzo, comune, CAP, provincia)
 - Attività prevalente
 - Codice ATECO
-- Amministratori e cariche
+- Amministratori, soci e cariche (fino a 5 persone)
 - Date costituzione/inizio attività
 
 ### Dal Documento di Identità:
@@ -153,12 +159,12 @@ Error: Tesseract not found
 ### Modificare i pattern di riconoscimento
 
 I pattern regex per l'estrazione si trovano nei metodi:
-- `extract_visura_data()` - riga 87
-- `extract_documento_data()` - riga 167
+- `extract_visura_data()` - riga 76+
+- `extract_documento_data()` - riga 204+
 
 ### Aggiungere nuovi campi
 
-Modifica il metodo `create_row_from_data()` alla riga 250
+Modifica il metodo `create_row_from_data()` alla riga 306+
 
 ## Note Tecniche
 
@@ -167,11 +173,17 @@ Modifica il metodo `create_row_from_data()` alla riga 250
 - I dati vengono validati con espressioni regolari
 - Il formato date è italiano (GG/MM/AAAA)
 - Supporto completo per caratteri accentati italiani
+- Gestione automatica di più soci/amministratori per azienda
 
-## Supporto
+## Correzioni Recenti (v1.1.0)
 
-Per problemi o domande, contatta il supporto tecnico.
+- ✅ Campo 'Prest Prof' ora lasciato vuoto
+- ✅ Pattern 'Indirizzo Sede' corretto (rimuove "legale" extra)
+- ✅ Pattern 'Nome Rappresentante' migliorato
+- ✅ Estrazione multipla di soci/amministratori (fino a 5)
+- ✅ Pattern 'Ragione Sociale' senza testo extra
+- ✅ Template Excel preserva tutte le 149 colonne
 
 ## Versione
 
-1.0.0 - Prima release
+1.1.0 - Correzioni pattern estrazione
